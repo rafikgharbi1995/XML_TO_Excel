@@ -12,10 +12,10 @@ from datetime import datetime
 APP_PASSWORD = "Indigo2025**"  # À MODIFIER !
 PASSWORD_HASH = hashlib.sha256(APP_PASSWORD.encode()).hexdigest()
 
-# LIMITES DE SÉCURITÉ (SANS BLOCAGE, SEULEMENT WARNING)
-MAX_FILES = 10
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
-MAX_TOTAL_SIZE = 50 * 1024 * 1024  # 50MB
+# LIMITES RELÂCHÉES (compatibles avec vos fichiers de 12.7MB)
+MAX_FILES = 20
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB (au lieu de 5MB)
+MAX_TOTAL_SIZE = 200 * 1024 * 1024  # 200MB total
 # ==========================================================
 
 # 🔐 SYSTÈME D'AUTHENTIFICATION
@@ -86,15 +86,25 @@ if not check_authentication():
 # ================= FONCTIONS PRINCIPALES =================
 
 def validate_files(files):
-    """Validation simple des fichiers (sans blocage)"""
+    """Validation simple sans messages d'erreur bloquants"""
     valid_files = []
+    large_files = []
     
-    # Filtrer uniquement les fichiers XML
     for file in files:
-        if file.name.lower().endswith('.xml'):
-            valid_files.append(file)
+        # Vérifier si c'est un XML
+        if not file.name.lower().endswith('.xml'):
+            continue  # Ignorer silencieusement les non-XML
+        
+        file_size_mb = len(file.getvalue()) / (1024 * 1024)
+        
+        # Avertissement pour fichiers très gros (>30MB) mais pas de blocage
+        if file_size_mb > 30:
+            large_files.append(f"{file.name} ({file_size_mb:.1f}MB)")
+        
+        # Toujours accepter le fichier (jusqu'à la limite Streamlit de 200MB)
+        valid_files.append(file)
     
-    return valid_files
+    return valid_files, large_files
 
 def detect_xml_format(xml_content):
     """Détecte le format du fichier XML"""
@@ -312,6 +322,20 @@ st.markdown("""
         color: white;
         font-weight: bold;
     }
+    .file-info {
+        background-color: #F0F9FF;
+        padding: 0.5rem;
+        border-radius: 5px;
+        margin-bottom: 0.5rem;
+        border-left: 3px solid #0EA5E9;
+    }
+    .warning-box {
+        background-color: #FEF3C7;
+        padding: 0.5rem;
+        border-radius: 5px;
+        margin-top: 1rem;
+        border-left: 3px solid #F59E0B;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -336,6 +360,12 @@ def main():
             st.session_state.authenticated = False
             st.session_state.auth_time = None
             st.rerun()
+        
+        st.markdown("---")
+        st.markdown("**📊 Capacités :**")
+        st.markdown("• Max 20 fichiers")
+        st.markdown("• Max 50MB par fichier")
+        st.markdown("• Max 200MB total")
 
     # Zone d'upload
     st.markdown("### 📁 Upload de fichiers")
@@ -347,30 +377,62 @@ def main():
     )
 
     if uploaded_files:
-        # Validation simple sans message d'erreur
-        valid_files = [f for f in uploaded_files if f.name.lower().endswith('.xml')]
+        # Validation avec avertissements mais sans blocage
+        valid_files, large_files = validate_files(uploaded_files)
         
         if valid_files:
-            st.success(f"✅ {len(valid_files)} fichier(s) XML détecté(s)")
+            # Afficher les fichiers avec leurs tailles
+            st.markdown(f"#### ✅ {len(valid_files)} fichier(s) XML prêt(s) au traitement")
+            
+            for file in valid_files:
+                file_size_mb = len(file.getvalue()) / (1024 * 1024)
+                st.markdown(f"""
+                <div class="file-info">
+                    <strong>{file.name}</strong><br>
+                    <small>Taille: {file_size_mb:.1f} MB • {file_size_mb:.0f} lignes estimées</small>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # Avertissement pour fichiers très gros (information seulement)
+            if large_files:
+                st.markdown("""
+                <div class="warning-box">
+                    ⚠️ <strong>Fichiers volumineux détectés</strong><br>
+                    <small>Les fichiers de plus de 30MB peuvent prendre plus de temps à traiter.
+                    Le traitement continuera normalement.</small>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                for large_file in large_files:
+                    st.caption(f"• {large_file}")
         else:
-            st.warning("⚠️ Aucun fichier XML valide trouvé")
+            st.info("📝 Veuillez sélectionner des fichiers XML (.xml)")
 
     # Traitement
     if uploaded_files and valid_files:
         st.markdown("---")
         st.markdown("### ⚡ Traitement")
         
-        if st.button("🚀 Traiter les fichiers", type="primary"):
-            results = {}
-            format_info = {}
-            
-            with st.spinner("Traitement en cours..."):
+        # Bouton de traitement
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            if st.button("🚀 Démarrer le traitement", type="primary", use_container_width=True):
+                results = {}
+                format_info = {}
+                failed_files = []
+                
+                # Barre de progression
                 progress_bar = st.progress(0)
+                status_text = st.empty()
                 
                 for idx, file_obj in enumerate(valid_files):
                     try:
-                        progress_bar.progress((idx + 1) / len(valid_files))
+                        # Mise à jour de la progression
+                        progress = (idx + 1) / len(valid_files)
+                        progress_bar.progress(progress)
+                        status_text.text(f"Traitement de {file_obj.name}...")
                         
+                        # Lecture et traitement
                         content = file_obj.getvalue().decode('utf-8')
                         dataframes, xml_format = parse_xml_to_dataframes(content)
                         
@@ -384,21 +446,45 @@ def main():
                                     'section_count': len(dataframes)
                                 }
                                 format_info[file_obj.name] = xml_format
+                            else:
+                                failed_files.append(f"{file_obj.name} (erreur Excel)")
+                        else:
+                            failed_files.append(f"{file_obj.name} (pas de données)")
                     
-                    except Exception:
+                    except Exception as e:
+                        failed_files.append(f"{file_obj.name} (erreur traitement)")
                         continue
                 
+                # Nettoyage UI
                 progress_bar.empty()
+                status_text.empty()
                 
+                # Affichage des résultats
                 if results:
                     st.markdown("---")
-                    st.markdown("### 💾 Téléchargements")
+                    st.markdown("### ✅ Traitement terminé")
                     
-                    # Résumé
+                    # Statistiques
                     total_files = len(results)
                     total_rows = sum(info['row_count'] for info in results.values())
                     
-                    st.info(f"📊 **Résumé :** {total_files} fichier(s) traité(s), {total_rows:,} lignes extraites")
+                    col_stat1, col_stat2, col_stat3 = st.columns(3)
+                    with col_stat1:
+                        st.metric("Fichiers traités", total_files)
+                    with col_stat2:
+                        st.metric("Lignes extraites", f"{total_rows:,}")
+                    with col_stat3:
+                        st.metric("Formats", len(set(format_info.values())))
+                    
+                    # Avertissement pour échecs (si existent)
+                    if failed_files:
+                        st.warning(f"⚠️ {len(failed_files)} fichier(s) n'ont pas pu être traités")
+                        with st.expander("Voir les détails"):
+                            for failed in failed_files:
+                                st.write(f"• {failed}")
+                    
+                    st.markdown("---")
+                    st.markdown("### 💾 Téléchargements")
                     
                     # Téléchargements
                     for file_name, file_info in results.items():
@@ -414,9 +500,16 @@ def main():
                                 key=f"dl_{hashlib.md5(file_name.encode()).hexdigest()[:8]}"
                             )
                     
-                    st.success("✅ Traitement terminé avec succès !")
+                    # Message de succès
+                    st.balloons()
+                    st.success("🎉 Tous les fichiers ont été traités avec succès !")
+                    
                 else:
-                    st.warning("⚠️ Aucune donnée n'a pu être extraite")
+                    st.error("❌ Aucun fichier n'a pu être traité")
+                    if failed_files:
+                        with st.expander("Détails des erreurs"):
+                            for failed in failed_files:
+                                st.write(f"• {failed}")
 
 if __name__ == "__main__":
     main()
