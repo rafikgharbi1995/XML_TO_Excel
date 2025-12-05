@@ -320,26 +320,25 @@ def main():
                         st.text_area("Aperçu XML:", content[:500], height=150, key=f"preview_{i}")
                     except:
                         pass
-
-    with col2:
-        st.markdown("### 📈 Statistiques")
-        if uploaded_files:
-            st.metric("Fichiers XML", len(uploaded_files))
-
-            # Aperçu des sections disponibles
-            if st.button("📊 Analyser la structure", key="analyze_structure"):
-                if uploaded_files:
-                    sample_file = uploaded_files[0]
-                    content = sample_file.getvalue().decode('utf-8')
-                    dataframes, xml_format = parse_xml_to_dataframes(content)
+###  with col2:
+ ###       st.markdown("### 📈 Statistiques")
+ ###       if uploaded_files:
+  ###          st.metric("Fichiers XML", len(uploaded_files))
+###
+ ###           # Aperçu des sections disponibles
+ ######           if st.button("📊 Analyser la structure", key="analyze_structure"):
+   ###             if uploaded_files:
+                ###    sample_file = uploaded_files[0]
+              ###      content = sample_file.getvalue().decode('utf-8')
+               ###     dataframes, xml_format = parse_xml_to_dataframes(content)
                     
-                    if dataframes:
-                        st.markdown(f"#### Format détecté: **{xml_format}**")
-                        st.markdown("#### Sections détectées:")
-                        for sheet_name, df in dataframes.items():
-                            st.markdown(f"- **{sheet_name}**: {len(df)} lignes")
-                    else:
-                        st.warning("Aucune section détectée dans le fichier")
+                ###    if dataframes:
+                  ###      st.markdown(f"#### Format détecté: **{xml_format}**")
+                     ###   st.markdown("#### Sections détectées:")
+                     ###   for sheet_name, df in dataframes.items():
+                     ###       st.markdown(f"- **{sheet_name}**: {len(df)} lignes")
+                 ###   else:
+                   ###     st.warning("Aucune section détectée dans le fichier")
 
     # Traitement des fichiers
     if uploaded_files:
