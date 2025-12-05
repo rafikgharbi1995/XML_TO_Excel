@@ -219,7 +219,7 @@ def main():
 
     # Sidebar pour la configuration
     with st.sidebar:
-        st.image("https://cdn-icons-png.flaticon.com/512/2289/2289148.png", width=100)
+        st.image("https://share.google/XBo6cOwQURlvW7VF6", width=100)
         st.markdown("### ⚙️ Configuration")
 
         drive_option = st.selectbox(
