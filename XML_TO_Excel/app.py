@@ -297,7 +297,7 @@ def main():
 
         # Upload manuel seulement
         uploaded_files = st.file_uploader(
-            "Téléchargez vos fichiers XML ItxCloseExport",
+            "Téléchargez vos fichiers XML ItxCloseExport/ItxCloseExportCom",
             type=['xml'],
             accept_multiple_files=True,
             help="Sélectionnez un ou plusieurs fichiers XML à traiter"
