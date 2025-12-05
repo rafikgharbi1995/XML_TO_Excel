@@ -9,7 +9,7 @@ from datetime import datetime
 
 # ================= CONFIGURATION SÉCURITÉ =================
 # ⚠️ CHANGEZ CE MOT DE PASSE ! ⚠️
-APP_PASSWORD = "INTTT_INDIGO_2024"  # À MODIFIER !
+APP_PASSWORD = "Indigo2025**"  # À MODIFIER !
 PASSWORD_HASH = hashlib.sha256(APP_PASSWORD.encode()).hexdigest()
 
 # LIMITES DE SÉCURITÉ
