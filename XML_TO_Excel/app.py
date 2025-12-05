@@ -1,0 +1,424 @@
+import streamlit as st
+import pandas as pd
+import xml.etree.ElementTree as ET
+import os
+import glob
+from datetime import datetime
+import tempfile
+import zipfile
+import io
+import base64
+
+st.set_page_config(
+    page_title="Extracteur XML ItxCloseExport",
+    page_icon="📊",
+    layout="wide"
+)
+
+# CSS personnalisé
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 2.5rem;
+        color: #1E3A8A;
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+    .success-box {
+        background-color: #D1FAE5;
+        padding: 1rem;
+        border-radius: 10px;
+        border-left: 5px solid #10B981;
+    }
+    .info-box {
+        background-color: #E0F2FE;
+        padding: 1rem;
+        border-radius: 10px;
+        border-left: 5px solid #0EA5E9;
+    }
+    .stButton>button {
+        width: 100%;
+        background-color: #3B82F6;
+        color: white;
+        font-weight: bold;
+    }
+    .file-card {
+        background-color: #F8FAFC;
+        padding: 1rem;
+        border-radius: 10px;
+        margin-bottom: 0.5rem;
+        border: 1px solid #E2E8F0;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+
+def find_xml_files(drive="C:"):
+    """Trouve tous les fichiers XML ItxCloseExport sur le disque spécifié"""
+    search_patterns = [
+        f"{drive}\\ItxCloseExport_*.xml",
+        f"{drive}\\*\\ItxCloseExport_*.xml",
+        f"{drive}\\*\\*\\ItxCloseExport_*.xml"
+    ]
+
+    xml_files = []
+    for pattern in search_patterns:
+        files = glob.glob(pattern, recursive=True)
+        xml_files.extend(files)
+
+    # Supprimer les doublons et trier
+    xml_files = list(set(xml_files))
+    xml_files.sort()
+    return xml_files
+
+
+def parse_xml_to_dataframes(xml_content, is_file_path=True):
+    """Parse le contenu XML et retourne des DataFrames"""
+    try:
+        if is_file_path:
+            tree = ET.parse(xml_content)
+        else:
+            tree = ET.ElementTree(ET.fromstring(xml_content))
+
+        root = tree.getroot()
+        dataframes = {}
+
+        # Fonction helper pour extraire les données d'une section
+        def extract_section(xpath, element_name, attributes=None, fields=None):
+            data = []
+            elements = root.findall(xpath)
+
+            for elem in elements:
+                row = {}
+
+                # Ajouter les attributs
+                if attributes:
+                    for attr in attributes:
+                        row[attr] = elem.get(attr)
+
+                # Ajouter les champs
+                if fields:
+                    for field in fields:
+                        field_elem = elem.find(field)
+                        row[field] = field_elem.text if field_elem is not None else None
+
+                data.append(row)
+
+            if data:
+                return pd.DataFrame(data)
+            return pd.DataFrame()
+
+        # 1. SALE_LINES
+        sale_lines_attrs = ['STOREID', 'POSNUMBER', 'OPERATIONNUMBER', 'OPERATIONTYPE', 'TICKETNUMBER']
+        sale_lines_fields = [
+            'barcode', 'description', 'quantity', 'price', 'orgPrice',
+            'date', 'time', 'familyCode', 'subFamilyCode', 'isVoidLine',
+            'lineNumber', 'campaign', 'lineType', 'employeeId', 'campaignYear',
+            'period', 'departmentId', 'operationTypeGroup', 'controlCode'
+        ]
+        df_sale = extract_section('.//SALE_LINES/LINE', 'LINE', sale_lines_attrs, sale_lines_fields)
+        if not df_sale.empty:
+            dataframes['SALE_LINES'] = df_sale
+
+        # 2. VALID_TICKETS
+        ticket_attrs = ['STOREID', 'POSNUMBER', 'OPERATIONNUMBER', 'OPERATIONTYPE', 'TICKETNUMBER', 'DOCUMENTUUID']
+        ticket_fields = [
+            'serial', 'date', 'time', 'operatorId', 'totalSale', 'totalNet',
+            'isVoidTicket', 'employeeId', 'fiscalprinterId', 'operationTypeGroup', 'roundingError'
+        ]
+        df_tickets = extract_section('.//VALID_TICKETS/TICKET', 'TICKET', ticket_attrs, ticket_fields)
+        if not df_tickets.empty:
+            dataframes['VALID_TICKETS'] = df_tickets
+
+        # 3. MEDIA_LINES
+        media_attrs = ['STOREID', 'POSNUMBER', 'OPERATIONNUMBER', 'OPERATIONTYPE', 'TICKETNUMBER']
+        media_fields = ['serial', 'date', 'time', 'paid', 'returned', 'paymentMethod']
+        df_media = extract_section('.//MEDIA_LINES/MEDIA', 'MEDIA', media_attrs, media_fields)
+        if not df_media.empty:
+            dataframes['MEDIA_LINES'] = df_media
+
+        # 4. VOIDED_TICKETS
+        voided_attrs = ['STOREID', 'POSNUMBER', 'OPERATIONNUMBER', 'OPERATIONTYPE', 'TICKETNUMBER', 'DOCUMENTUUID']
+        voided_fields = [
+            'time', 'operatorId', 'voidedserial', 'voidedoperationNumber',
+            'voidedPosNumber', 'voidedstoreId', 'originalUID'
+        ]
+        df_voided = extract_section('.//VOIDED_TICKETS/TICKET_VOID', 'TICKET_VOID', voided_attrs, voided_fields)
+        if not df_voided.empty:
+            dataframes['VOIDED_TICKETS'] = df_voided
+
+        # 5. TRANSACTIONS
+        trans_fields = [
+            'code', 'description', 'debit', 'credit', 'auxValue', 'auxValue2',
+            'taxPercent', 'employeeId', 'universalId', 'txType'
+        ]
+        df_trans = extract_section('.//TRANSACTIONS/TRANSACTION', 'TRANSACTION', None, trans_fields)
+        if not df_trans.empty:
+            dataframes['TRANSACTIONS'] = df_trans
+
+        # 6. WARNINGS
+        warn_fields = ['warningType', 'warningMessage', 'posNumber', 'refoperationNumber']
+        df_warn = extract_section('.//WARNINGS/WARNING', 'WARNING', None, warn_fields)
+        if not df_warn.empty:
+            dataframes['WARNINGS'] = df_warn
+
+        # 7. STORE_INFO
+        store_info = root.find('.//STORE_INFO')
+        if store_info is not None:
+            store_data = {
+                'storeId': store_info.findtext('storeId'),
+                'companyName': store_info.findtext('companyName'),
+                'fiscalIdentifier': store_info.findtext('fiscalIdentifier'),
+                'sessionDate': store_info.findtext('sessionDate'),
+                'dateFrom': store_info.findtext('dateFrom'),
+                'timeFrom': store_info.findtext('timeFrom'),
+                'dateTo': store_info.findtext('dateTo'),
+                'timeTo': store_info.findtext('timeTo'),
+                'version': store_info.findtext('version')
+            }
+            dataframes['STORE_INFO'] = pd.DataFrame([store_data])
+
+        return dataframes
+
+    except Exception as e:
+        st.error(f"Erreur lors du parsing XML: {str(e)}")
+        return {}
+
+
+def create_excel_file(dataframes):
+    """Crée un fichier Excel en mémoire avec plusieurs onglets"""
+    output = io.BytesIO()
+
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        for sheet_name, df in dataframes.items():
+            if not df.empty:
+                df.to_excel(writer, sheet_name=sheet_name[:31], index=False)
+
+    output.seek(0)
+    return output
+
+
+def create_csv_zip(dataframes):
+    """Crée un ZIP contenant tous les CSV"""
+    zip_buffer = io.BytesIO()
+
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        for sheet_name, df in dataframes.items():
+            if not df.empty:
+                csv_buffer = io.StringIO()
+                df.to_csv(csv_buffer, sep=';', index=False, encoding='utf-8')
+                zip_file.writestr(f"{sheet_name}.csv", csv_buffer.getvalue())
+
+    zip_buffer.seek(0)
+    return zip_buffer
+
+
+def main():
+    # En-tête de l'application
+    st.markdown('<h1 class="main-header">📊 Extracteur XML ItxCloseExport</h1>', unsafe_allow_html=True)
+
+    # Sidebar pour la configuration
+    with st.sidebar:
+        st.image("https://cdn-icons-png.flaticon.com/512/2289/2289148.png", width=100)
+        st.markdown("### ⚙️ Configuration")
+
+        drive_option = st.selectbox(
+            "Disque à analyser",
+            ["C:", "D:", "E:", "F:", "G:"],
+            index=0
+        )
+
+        st.markdown("---")
+        st.markdown("### 📁 Méthode d'import")
+        import_method = st.radio(
+            "Choisissez comment importer les fichiers:",
+            ["Recherche automatique", "Upload manuel"],
+            index=0
+        )
+
+        st.markdown("---")
+        st.markdown("### 💾 Format d'export")
+        export_format = st.multiselect(
+            "Sélectionnez les formats d'export:",
+            ["Excel (.xlsx)", "CSV (.csv)", "ZIP avec tous les CSV"],
+            default=["Excel (.xlsx)"]
+        )
+
+        st.markdown("---")
+        st.info("""
+        **Fonctionnalités:**
+        - Recherche automatique des fichiers XML
+        - Extraction de toutes les sections
+        - Export multi-formats
+        - Prévisualisation des données
+        """)
+
+    # Contenu principal
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        st.markdown("### 🔍 Recherche de fichiers")
+
+        xml_files = []
+
+        if import_method == "Recherche automatique":
+            if st.button("🔎 Lancer la recherche automatique", type="primary"):
+                with st.spinner(f"Recherche des fichiers XML sur {drive_option}..."):
+                    xml_files = find_xml_files(drive_option)
+
+                    if xml_files:
+                        st.success(f"✅ {len(xml_files)} fichier(s) trouvé(s)")
+
+                        # Afficher la liste des fichiers
+                        st.markdown("#### 📋 Fichiers trouvés:")
+                        for i, file in enumerate(xml_files, 1):
+                            file_size = os.path.getsize(file) / 1024  # Taille en KB
+                            with st.expander(f"{i}. {os.path.basename(file)} ({file_size:.1f} KB)"):
+                                st.code(file)
+                                st.caption(f"Dossier: {os.path.dirname(file)}")
+                    else:
+                        st.warning("❌ Aucun fichier XML trouvé")
+
+        else:  # Upload manuel
+            uploaded_files = st.file_uploader(
+                "Téléchargez vos fichiers XML",
+                type=['xml'],
+                accept_multiple_files=True
+            )
+
+            if uploaded_files:
+                xml_files = [file.name for file in uploaded_files]
+                st.success(f"✅ {len(uploaded_files)} fichier(s) téléchargé(s)")
+
+    with col2:
+        st.markdown("### 📈 Statistiques")
+        if xml_files:
+            st.metric("Fichiers XML", len(xml_files))
+
+            # Aperçu des sections disponibles
+            if st.button("📊 Analyser la structure"):
+                if import_method == "Upload manuel" and uploaded_files:
+                    sample_file = uploaded_files[0]
+                    content = sample_file.getvalue().decode('utf-8')
+                    dataframes = parse_xml_to_dataframes(content, is_file_path=False)
+                elif xml_files and import_method == "Recherche automatique":
+                    dataframes = parse_xml_to_dataframes(xml_files[0], is_file_path=True)
+
+                if dataframes:
+                    st.markdown("#### Sections détectées:")
+                    for sheet_name, df in dataframes.items():
+                        st.markdown(f"- **{sheet_name}**: {len(df)} lignes")
+
+    # Traitement des fichiers
+    if xml_files:
+        st.markdown("---")
+        st.markdown("### ⚡ Traitement")
+
+        if st.button("🚀 Traiter tous les fichiers", type="primary"):
+            all_results = {}
+
+            with st.spinner("Traitement en cours..."):
+                progress_bar = st.progress(0)
+
+                for idx, xml_file in enumerate(xml_files):
+                    try:
+                        # Mettre à jour la barre de progression
+                        progress = (idx + 1) / len(xml_files)
+                        progress_bar.progress(progress)
+
+                        # Traiter le fichier
+                        if import_method == "Upload manuel":
+                            file_obj = uploaded_files[idx]
+                            content = file_obj.getvalue().decode('utf-8')
+                            dataframes = parse_xml_to_dataframes(content, is_file_path=False)
+                            file_name = file_obj.name
+                        else:
+                            dataframes = parse_xml_to_dataframes(xml_file, is_file_path=True)
+                            file_name = os.path.basename(xml_file)
+
+                        if dataframes:
+                            all_results[file_name] = dataframes
+
+                            # Afficher un aperçu
+                            with st.expander(f"📄 {file_name}", expanded=False):
+                                selected_sheet = st.selectbox(
+                                    "Choisir une section à prévisualiser:",
+                                    list(dataframes.keys()),
+                                    key=f"preview_{idx}"
+                                )
+
+                                if selected_sheet in dataframes:
+                                    df_preview = dataframes[selected_sheet]
+                                    st.dataframe(df_preview.head(10))
+                                    st.caption(f"Aperçu de {selected_sheet} ({len(df_preview)} lignes au total)")
+
+                    except Exception as e:
+                        st.error(f"Erreur avec {xml_file}: {str(e)}")
+
+                progress_bar.empty()
+
+                # Exporter les résultats
+                if all_results:
+                    st.markdown("---")
+                    st.markdown("### 💾 Exporter les résultats")
+
+                    # Options d'export
+                    for file_name, dataframes in all_results.items():
+                        base_name = os.path.splitext(file_name)[0]
+
+                        st.markdown(f"#### 📦 {file_name}")
+
+                        col_export1, col_export2, col_export3 = st.columns(3)
+
+                        if "Excel (.xlsx)" in export_format:
+                            with col_export1:
+                                excel_file = create_excel_file(dataframes)
+                                st.download_button(
+                                    label="📥 Télécharger Excel",
+                                    data=excel_file,
+                                    file_name=f"{base_name}_export.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                )
+
+                        if "CSV (.csv)" in export_format:
+                            with col_export2:
+                                # Télécharger chaque CSV séparément
+                                for sheet_name, df in dataframes.items():
+                                    if not df.empty:
+                                        csv = df.to_csv(sep=';', index=False, encoding='utf-8')
+                                        st.download_button(
+                                            label=f"📥 {sheet_name}.csv",
+                                            data=csv,
+                                            file_name=f"{base_name}_{sheet_name}.csv",
+                                            mime="text/csv",
+                                            key=f"csv_{file_name}_{sheet_name}"
+                                        )
+
+                        if "ZIP avec tous les CSV" in export_format:
+                            with col_export3:
+                                zip_file = create_csv_zip(dataframes)
+                                st.download_button(
+                                    label="📦 Télécharger ZIP",
+                                    data=zip_file,
+                                    file_name=f"{base_name}_export.zip",
+                                    mime="application/zip"
+                                )
+
+                    # Résumé global
+                    st.markdown('<div class="success-box">', unsafe_allow_html=True)
+                    st.markdown("### ✅ Traitement terminé avec succès!")
+                    st.markdown(f"**Fichiers traités:** {len(all_results)}")
+                    total_rows = sum(
+                        len(df)
+                        for file_data in all_results.values()
+                        for df in file_data.values()
+                    )
+                    st.markdown(f"**Lignes extraites au total:** {total_rows:,}")
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+                else:
+                    st.warning("Aucune donnée n'a pu être extraite des fichiers.")
+
+
+if __name__ == "__main__":
+    main()
