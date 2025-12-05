@@ -6,8 +6,8 @@ import io
 import zipfile
 
 st.set_page_config(
-    page_title="Extracteur XML ItxCloseExport",
-    page_icon="📊",
+    page_title="XML=>Excel ItxCloseExport",
+    page_icon="🔄",
     layout="wide"
 )
 
