@@ -3,7 +3,119 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 import os
 import io
+import hashlib
+import time
 
+# ================= CONFIGURATION MOT DE PASSE =================
+# ⚠️ CHANGEZ CE MOT DE PASSE PAR VOTRE PROPRE MOT DE PASSE ! ⚠️
+APP_PASSWORD = "Indigo2025**"  # À MODIFIER !
+PASSWORD_HASH = hashlib.sha256(APP_PASSWORD.encode()).hexdigest()
+# ==============================================================
+
+# 🔐 SYSTÈME D'AUTHENTIFICATION
+def check_authentication():
+    """Vérifie si l'utilisateur est authentifié"""
+    
+    # Initialiser la session
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+        st.session_state.auth_time = None
+    
+    # Si déjà authentifié et session encore valide (8 heures)
+    if st.session_state.authenticated and st.session_state.auth_time:
+        session_duration = time.time() - st.session_state.auth_time
+        if session_duration < 8 * 3600:  # 8 heures
+            return True
+        else:
+            # Session expirée
+            st.session_state.authenticated = False
+            st.session_state.auth_time = None
+    
+    return False
+
+def show_login_page():
+    """Affiche la page de connexion"""
+    st.set_page_config(
+        page_title="Authentification",
+        page_icon="🔒",
+        layout="centered"
+    )
+    
+    # Style pour la page de login
+    st.markdown("""
+    <style>
+        .login-container {
+            max-width: 400px;
+            margin: 0 auto;
+            padding: 2rem;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            background-color: #ffffff;
+        }
+        .login-header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+        .company-logo {
+            font-size: 2rem;
+            font-weight: bold;
+            color: #1E3A8A;
+            margin-bottom: 1rem;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    # Conteneur de login
+    st.markdown('<div class="login-container">', unsafe_allow_html=True)
+    
+    # En-tête
+    st.markdown('<div class="login-header">', unsafe_allow_html=True)
+    st.markdown('<div class="company-logo">🔒 XML/Excel</div>', unsafe_allow_html=True)
+    st.markdown('<h3 style="text-align: center; color: #1E3A8A;">Authentification Requise</h3>', unsafe_allow_html=True)
+    st.markdown('<p style="text-align: center; color: #666;">INDIGO COMPANY / INDITEX</p>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Formulaire de connexion
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        password = st.text_input(
+            "**Mot de passe d'accès :**",
+            type="password",
+            key="login_password"
+        )
+        
+        if st.button("🔓 Se connecter", type="primary", use_container_width=True):
+            # Vérifier le mot de passe
+            input_hash = hashlib.sha256(password.encode()).hexdigest()
+            if input_hash == PASSWORD_HASH:
+                st.session_state.authenticated = True
+                st.session_state.auth_time = time.time()
+                st.success("✅ Authentification réussie !")
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error("❌ Mot de passe incorrect")
+    
+    # Message d'information
+    st.markdown("---")
+    st.markdown("""
+    <div style="background-color: #E0F2FE; padding: 1rem; border-radius: 5px; margin-top: 1rem;">
+        <small>ℹ️ <strong>Accès restreint</strong><br>
+        Cette application est réservée au personnel autorisé de <strong>INDIGO COMPANY / INDITEX</strong>.
+        Contactez l'administrateur pour obtenir les droits d'accès.</small>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Empêcher l'accès à l'application
+    st.stop()
+
+# VÉRIFIER L'AUTHENTIFICATION AVANT TOUT
+if not check_authentication():
+    show_login_page()
+
+# ================= APPLICATION PRINCIPALE =================
 st.set_page_config(
     page_title="XML/Excel",
     page_icon="🔄",
@@ -36,6 +148,13 @@ st.markdown("""
         background-color: #3B82F6;
         color: white;
         font-weight: bold;
+    }
+    .security-info {
+        background-color: #FEF3C7;
+        padding: 0.5rem;
+        border-radius: 5px;
+        border-left: 4px solid #F59E0B;
+        margin-bottom: 1rem;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -281,13 +400,35 @@ def create_excel_file(dataframes):
 def main():
     # En-tête de l'application
     st.markdown('<h1 class="main-header">🔄 XML/Excel (ItxCloseExport/ItxCloseExportCom)</h1>', unsafe_allow_html=True)
+    
+    # Info de sécurité
+    st.markdown("""
+    <div class="security-info">
+        🔒 <strong>Application sécurisée</strong> - Accès restreint au personnel autorisé
+    </div>
+    """, unsafe_allow_html=True)
 
     # Sidebar pour la configuration
     with st.sidebar:
         st.markdown('<h3 style="font-weight: bold;">INDIGO COMPANY / INDITEX</h3>', unsafe_allow_html=True)
         st.markdown("### ⚙️ Configuration")
         
+        # Bouton de déconnexion
         st.markdown("---")
+        if st.button("🚪 Déconnexion", type="secondary", use_container_width=True):
+            st.session_state.authenticated = False
+            st.session_state.auth_time = None
+            st.rerun()
+        
+        st.markdown("---")
+        st.markdown("""
+        <div style="background-color: #E0F2FE; padding: 1rem; border-radius: 5px; margin-top: 1rem;">
+            <small>📋 <strong>Instructions</strong><br>
+            1. Upload vos fichiers XML<br>
+            2. Cliquez sur "Traiter"<br>
+            3. Téléchargez le Excel généré</small>
+        </div>
+        """, unsafe_allow_html=True)
 
     # Contenu principal
     col1, col2 = st.columns([2, 1])
@@ -320,25 +461,6 @@ def main():
                         st.text_area("Aperçu XML:", content[:500], height=150, key=f"preview_{i}")
                     except:
                         pass
-###  with col2:
- ###       st.markdown("### 📈 Statistiques")
- ###       if uploaded_files:
-  ###          st.metric("Fichiers XML", len(uploaded_files))
-###
- ###           # Aperçu des sections disponibles
- ######           if st.button("📊 Analyser la structure", key="analyze_structure"):
-   ###             if uploaded_files:
-                ###    sample_file = uploaded_files[0]
-              ###      content = sample_file.getvalue().decode('utf-8')
-               ###     dataframes, xml_format = parse_xml_to_dataframes(content)
-                    
-                ###    if dataframes:
-                  ###      st.markdown(f"#### Format détecté: **{xml_format}**")
-                     ###   st.markdown("#### Sections détectées:")
-                     ###   for sheet_name, df in dataframes.items():
-                     ###       st.markdown(f"- **{sheet_name}**: {len(df)} lignes")
-                 ###   else:
-                   ###     st.warning("Aucune section détectée dans le fichier")
 
     # Traitement des fichiers
     if uploaded_files:
