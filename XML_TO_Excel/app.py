@@ -2,12 +2,8 @@ import streamlit as st
 import pandas as pd
 import xml.etree.ElementTree as ET
 import os
-import glob
-from datetime import datetime
-import tempfile
-import zipfile
 import io
-import base64
+import zipfile
 
 st.set_page_config(
     page_title="Extracteur XML ItxCloseExport",
@@ -41,13 +37,6 @@ st.markdown("""
         background-color: #3B82F6;
         color: white;
         font-weight: bold;
-    }
-    .file-card {
-        background-color: #F8FAFC;
-        padding: 1rem;
-        border-radius: 10px;
-        margin-bottom: 0.5rem;
-        border: 1px solid #E2E8F0;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -179,44 +168,22 @@ def create_excel_file(dataframes):
     return output
 
 
-def create_csv_zip(dataframes):
-    """Crée un ZIP contenant tous les CSV"""
-    zip_buffer = io.BytesIO()
-
-    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-        for sheet_name, df in dataframes.items():
-            if not df.empty:
-                csv_buffer = io.StringIO()
-                df.to_csv(csv_buffer, sep=';', index=False, encoding='utf-8')
-                zip_file.writestr(f"{sheet_name}.csv", csv_buffer.getvalue())
-
-    zip_buffer.seek(0)
-    return zip_buffer
-
-
 def main():
     # En-tête de l'application
     st.markdown('<h1 class="main-header">📊 Extracteur XML ItxCloseExport</h1>', unsafe_allow_html=True)
 
     # Sidebar pour la configuration
     with st.sidebar:
-        st.markdown("**INDIGO / INDITEX**")
+        st.markdown("**INDIGO COMPANY / INDITEX**")
         st.markdown("### ⚙️ Configuration")
-
-        st.markdown("---")
-        st.markdown("### 💾 Format d'export")
-        export_format = st.multiselect(
-            "Sélectionnez les formats d'export:",
-            ["Excel (.xlsx)", "CSV (.csv)", "ZIP avec tous les CSV"],
-            default=["Excel (.xlsx)"]
-        )
-
+        st.markdown("**INTTT**")
+        
         st.markdown("---")
         st.info("""
         **Fonctionnalités:**
         - Upload manuel des fichiers XML
         - Extraction de toutes les sections
-        - Export multi-formats
+        - Export Excel multi-onglets
         - Prévisualisation des données
         """)
 
@@ -312,49 +279,21 @@ def main():
                     st.markdown("---")
                     st.markdown("### 💾 Exporter les résultats")
 
-                    # Options d'export
+                    # Options d'export - SEULEMENT EXCEL
                     for file_name, dataframes in all_results.items():
                         base_name = os.path.splitext(file_name)[0]
 
                         st.markdown(f"#### 📦 {file_name}")
 
-                        col_export1, col_export2, col_export3 = st.columns(3)
-
-                        if "Excel (.xlsx)" in export_format:
-                            with col_export1:
-                                excel_file = create_excel_file(dataframes)
-                                st.download_button(
-                                    label="📥 Télécharger Excel",
-                                    data=excel_file,
-                                    file_name=f"{base_name}_export.xlsx",
-                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                    key=f"excel_{file_name}"
-                                )
-
-                        if "CSV (.csv)" in export_format:
-                            with col_export2:
-                                # Télécharger chaque CSV séparément
-                                for sheet_name, df in dataframes.items():
-                                    if not df.empty:
-                                        csv = df.to_csv(sep=';', index=False, encoding='utf-8')
-                                        st.download_button(
-                                            label=f"📥 {sheet_name}.csv",
-                                            data=csv,
-                                            file_name=f"{base_name}_{sheet_name}.csv",
-                                            mime="text/csv",
-                                            key=f"csv_{file_name}_{sheet_name}"
-                                        )
-
-                        if "ZIP avec tous les CSV" in export_format:
-                            with col_export3:
-                                zip_file = create_csv_zip(dataframes)
-                                st.download_button(
-                                    label="📦 Télécharger ZIP",
-                                    data=zip_file,
-                                    file_name=f"{base_name}_export.zip",
-                                    mime="application/zip",
-                                    key=f"zip_{file_name}"
-                                )
+                        # Bouton Excel uniquement
+                        excel_file = create_excel_file(dataframes)
+                        st.download_button(
+                            label="📥 Télécharger Excel (.xlsx)",
+                            data=excel_file,
+                            file_name=f"{base_name}_export.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key=f"excel_{file_name}"
+                        )
 
                     # Résumé global
                     st.markdown('<div class="success-box">', unsafe_allow_html=True)
