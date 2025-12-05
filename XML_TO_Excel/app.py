@@ -53,25 +53,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-def find_xml_files(drive="C:"):
-    """Trouve tous les fichiers XML ItxCloseExport sur le disque spécifié"""
-    search_patterns = [
-        f"{drive}\\ItxCloseExport_*.xml",
-        f"{drive}\\*\\ItxCloseExport_*.xml",
-        f"{drive}\\*\\*\\ItxCloseExport_*.xml"
-    ]
-
-    xml_files = []
-    for pattern in search_patterns:
-        files = glob.glob(pattern, recursive=True)
-        xml_files.extend(files)
-
-    # Supprimer les doublons et trier
-    xml_files = list(set(xml_files))
-    xml_files.sort()
-    return xml_files
-
-
 def parse_xml_to_dataframes(xml_content, is_file_path=True):
     """Parse le contenu XML et retourne des DataFrames"""
     try:
@@ -219,22 +200,7 @@ def main():
 
     # Sidebar pour la configuration
     with st.sidebar:
-        st.image("https://share.google/XBo6cOwQURlvW7VF6", width=100)
         st.markdown("### ⚙️ Configuration")
-
-        drive_option = st.selectbox(
-            "Disque à analyser",
-            ["C:", "D:", "E:", "F:", "G:"],
-            index=0
-        )
-
-        st.markdown("---")
-        st.markdown("### 📁 Méthode d'import")
-        import_method = st.radio(
-            "Choisissez comment importer les fichiers:",
-            ["Recherche automatique", "Upload manuel"],
-            index=0
-        )
 
         st.markdown("---")
         st.markdown("### 💾 Format d'export")
@@ -247,7 +213,7 @@ def main():
         st.markdown("---")
         st.info("""
         **Fonctionnalités:**
-        - Recherche automatique des fichiers XML
+        - Upload manuel des fichiers XML
         - Extraction de toutes les sections
         - Export multi-formats
         - Prévisualisation des données
@@ -257,84 +223,67 @@ def main():
     col1, col2 = st.columns([2, 1])
 
     with col1:
-        st.markdown("### 🔍 Recherche de fichiers")
+        st.markdown("### 📁 Upload de fichiers")
 
-        xml_files = []
+        # Upload manuel seulement
+        uploaded_files = st.file_uploader(
+            "Téléchargez vos fichiers XML ItxCloseExport",
+            type=['xml'],
+            accept_multiple_files=True,
+            help="Sélectionnez un ou plusieurs fichiers XML à traiter"
+        )
 
-        if import_method == "Recherche automatique":
-            if st.button("🔎 Lancer la recherche automatique", type="primary"):
-                with st.spinner(f"Recherche des fichiers XML sur {drive_option}..."):
-                    xml_files = find_xml_files(drive_option)
-
-                    if xml_files:
-                        st.success(f"✅ {len(xml_files)} fichier(s) trouvé(s)")
-
-                        # Afficher la liste des fichiers
-                        st.markdown("#### 📋 Fichiers trouvés:")
-                        for i, file in enumerate(xml_files, 1):
-                            file_size = os.path.getsize(file) / 1024  # Taille en KB
-                            with st.expander(f"{i}. {os.path.basename(file)} ({file_size:.1f} KB)"):
-                                st.code(file)
-                                st.caption(f"Dossier: {os.path.dirname(file)}")
-                    else:
-                        st.warning("❌ Aucun fichier XML trouvé")
-
-        else:  # Upload manuel
-            uploaded_files = st.file_uploader(
-                "Téléchargez vos fichiers XML",
-                type=['xml'],
-                accept_multiple_files=True
-            )
-
-            if uploaded_files:
-                xml_files = [file.name for file in uploaded_files]
-                st.success(f"✅ {len(uploaded_files)} fichier(s) téléchargé(s)")
+        if uploaded_files:
+            st.success(f"✅ {len(uploaded_files)} fichier(s) téléchargé(s)")
+            
+            # Afficher la liste des fichiers
+            st.markdown("#### 📋 Fichiers uploadés:")
+            for i, file in enumerate(uploaded_files, 1):
+                file_size = len(file.getvalue()) / 1024  # Taille en KB
+                with st.expander(f"{i}. {file.name} ({file_size:.1f} KB)"):
+                    st.code(f"Taille: {file_size:.1f} KB")
+                    st.caption(f"Type: {file.type}")
 
     with col2:
         st.markdown("### 📈 Statistiques")
-        if xml_files:
-            st.metric("Fichiers XML", len(xml_files))
+        if uploaded_files:
+            st.metric("Fichiers XML", len(uploaded_files))
 
             # Aperçu des sections disponibles
-            if st.button("📊 Analyser la structure"):
-                if import_method == "Upload manuel" and uploaded_files:
+            if st.button("📊 Analyser la structure", key="analyze_structure"):
+                if uploaded_files:
                     sample_file = uploaded_files[0]
                     content = sample_file.getvalue().decode('utf-8')
                     dataframes = parse_xml_to_dataframes(content, is_file_path=False)
-                elif xml_files and import_method == "Recherche automatique":
-                    dataframes = parse_xml_to_dataframes(xml_files[0], is_file_path=True)
-
-                if dataframes:
-                    st.markdown("#### Sections détectées:")
-                    for sheet_name, df in dataframes.items():
-                        st.markdown(f"- **{sheet_name}**: {len(df)} lignes")
+                    
+                    if dataframes:
+                        st.markdown("#### Sections détectées:")
+                        for sheet_name, df in dataframes.items():
+                            st.markdown(f"- **{sheet_name}**: {len(df)} lignes")
+                    else:
+                        st.warning("Aucune section détectée dans le fichier")
 
     # Traitement des fichiers
-    if xml_files:
+    if uploaded_files:
         st.markdown("---")
         st.markdown("### ⚡ Traitement")
 
-        if st.button("🚀 Traiter tous les fichiers", type="primary"):
+        if st.button("🚀 Traiter tous les fichiers", type="primary", key="process_files"):
             all_results = {}
 
             with st.spinner("Traitement en cours..."):
                 progress_bar = st.progress(0)
 
-                for idx, xml_file in enumerate(xml_files):
+                for idx, file_obj in enumerate(uploaded_files):
                     try:
                         # Mettre à jour la barre de progression
-                        progress = (idx + 1) / len(xml_files)
+                        progress = (idx + 1) / len(uploaded_files)
                         progress_bar.progress(progress)
 
                         # Traiter le fichier
-                        if import_method == "Upload manuel":
-                            file_obj = uploaded_files[idx]
-                            content = file_obj.getvalue().decode('utf-8')
-                            dataframes = parse_xml_to_dataframes(content, is_file_path=False)
-                            file_name = file_obj.name
-                        else:
-                            dataframes = parse_xml_to_dataframes(xml_file, is_file_path=True)
-                            file_name = os.path.basename(xml_file)
+                        content = file_obj.getvalue().decode('utf-8')
+                        dataframes = parse_xml_to_dataframes(content, is_file_path=False)
+                        file_name = file_obj.name
 
                         if dataframes:
                             all_results[file_name] = dataframes
@@ -353,7 +302,7 @@ def main():
                                     st.caption(f"Aperçu de {selected_sheet} ({len(df_preview)} lignes au total)")
 
                     except Exception as e:
-                        st.error(f"Erreur avec {xml_file}: {str(e)}")
+                        st.error(f"Erreur avec {file_obj.name}: {str(e)}")
 
                 progress_bar.empty()
 
@@ -377,7 +326,8 @@ def main():
                                     label="📥 Télécharger Excel",
                                     data=excel_file,
                                     file_name=f"{base_name}_export.xlsx",
-                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    key=f"excel_{file_name}"
                                 )
 
                         if "CSV (.csv)" in export_format:
@@ -401,7 +351,8 @@ def main():
                                     label="📦 Télécharger ZIP",
                                     data=zip_file,
                                     file_name=f"{base_name}_export.zip",
-                                    mime="application/zip"
+                                    mime="application/zip",
+                                    key=f"zip_{file_name}"
                                 )
 
                     # Résumé global
