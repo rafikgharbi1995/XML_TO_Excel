@@ -176,7 +176,6 @@ def main():
     with st.sidebar:
         st.markdown("**INDIGO COMPANY / INDITEX**")
         st.markdown("### ⚙️ Configuration")
-        st.markdown("**INTTT**")
         
         st.markdown("---")
         st.info("""
