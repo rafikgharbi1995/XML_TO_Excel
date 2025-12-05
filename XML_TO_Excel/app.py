@@ -170,7 +170,7 @@ def create_excel_file(dataframes):
 
 def main():
     # En-tête de l'application
-    st.markdown('<h1 class="main-header">🔄 XML➡️Excel ItxCloseExport</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">🔄 XML➡️Excel (ItxCloseExport)</h1>', unsafe_allow_html=True)
 
     # Sidebar pour la configuration
     with st.sidebar:
