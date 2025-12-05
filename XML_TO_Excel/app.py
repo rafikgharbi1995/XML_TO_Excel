@@ -288,18 +288,6 @@ def main():
         st.markdown("### ⚙️ Configuration")
         
         st.markdown("---")
-        st.info("""
-        **Formats supportés:**
-        - ItxCloseExport (standard)
-        - ItxCloseExportCom (nouveau format)
-        
-        **Fonctionnalités:**
-        - Upload manuel des fichiers XML
-        - Détection automatique du format
-        - Extraction de toutes les sections
-        - Export Excel multi-onglets
-        - Prévisualisation des données
-        """)
 
     # Contenu principal
     col1, col2 = st.columns([2, 1])
