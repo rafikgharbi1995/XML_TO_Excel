@@ -174,7 +174,7 @@ def main():
 
     # Sidebar pour la configuration
     with st.sidebar:
-        st.markdown('<h4 style="font-weight: bold;">INDIGO COMPANY / INDITEX</h4>', unsafe_allow_html=True)
+        st.markdown('<h3 style="font-weight: bold;">INDIGO COMPANY / INDITEX</h3>', unsafe_allow_html=True)
         st.markdown("### ⚙️ Configuration")
         
         st.markdown("---")
