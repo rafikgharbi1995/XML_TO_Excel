@@ -200,6 +200,7 @@ def main():
 
     # Sidebar pour la configuration
     with st.sidebar:
+        st.markdown("**INDIGO / INDITEX**")
         st.markdown("### ⚙️ Configuration")
 
         st.markdown("---")
