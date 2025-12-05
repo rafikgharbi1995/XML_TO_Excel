@@ -3,10 +3,9 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 import os
 import io
-import zipfile
 
 st.set_page_config(
-    page_title="XML/Excel ItxCloseExport",
+    page_title="XML=>Excel",
     page_icon="🔄",
     layout="wide"
 )
@@ -42,15 +41,94 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-def parse_xml_to_dataframes(xml_content, is_file_path=True):
-    """Parse le contenu XML et retourne des DataFrames"""
+def detect_xml_format(xml_content):
+    """Détecte le format du fichier XML"""
     try:
-        if is_file_path:
-            tree = ET.parse(xml_content)
+        root = ET.fromstring(xml_content)
+        root_tag = root.tag
+        
+        if 'ITX_CLOSE_EXPORT_COM' in root_tag:
+            return 'ITX_COM'
+        elif 'ITXCloseExport' in root_tag or 'ITX_CLOSE_EXPORT' in root_tag:
+            return 'ITX_STANDARD'
         else:
-            tree = ET.ElementTree(ET.fromstring(xml_content))
+            # Essayer de détecter par la structure
+            if root.find('.//SALE_LINE_ITEMS') is not None:
+                return 'ITX_COM'
+            elif root.find('.//SALE_LINES') is not None:
+                return 'ITX_STANDARD'
+            else:
+                return 'UNKNOWN'
+    except:
+        return 'UNKNOWN'
 
-        root = tree.getroot()
+
+def parse_itx_com_format(xml_content):
+    """Parse le format ITX_CLOSE_EXPORT_COM"""
+    try:
+        root = ET.fromstring(xml_content)
+        dataframes = {}
+
+        # Fonction helper pour extraire les données
+        def extract_itx_com_section(section_name, element_name):
+            data = []
+            section = root.find(f'.//{section_name}')
+            
+            if section is not None:
+                elements = section.findall(element_name)
+                for elem in elements:
+                    row = {}
+                    for child in elem:
+                        # Récupérer le texte et convertir les types si possible
+                        text = child.text
+                        if text is not None:
+                            # Essayer de convertir en numérique si c'est un nombre
+                            if text.strip().isdigit() or (text.strip().startswith('-') and text.strip()[1:].isdigit()):
+                                try:
+                                    row[child.tag] = int(text)
+                                except:
+                                    row[child.tag] = text
+                            else:
+                                row[child.tag] = text
+                        else:
+                            row[child.tag] = None
+                    data.append(row)
+            
+            if data:
+                return pd.DataFrame(data)
+            return pd.DataFrame()
+
+        # 1. VALID_TICKETS
+        df_valid_tickets = extract_itx_com_section('VALID_TICKETS', 'TICKET')
+        if not df_valid_tickets.empty:
+            dataframes['VALID_TICKETS'] = df_valid_tickets
+
+        # 2. SALE_LINE_ITEMS (anciennement SALE_LINES)
+        df_sale_items = extract_itx_com_section('SALE_LINE_ITEMS', 'ITEM')
+        if not df_sale_items.empty:
+            dataframes['SALE_LINE_ITEMS'] = df_sale_items
+
+        # 3. MEDIA_LINES
+        df_media = extract_itx_com_section('MEDIA_LINES', 'MEDIA')
+        if not df_media.empty:
+            dataframes['MEDIA_LINES'] = df_media
+
+        # 4. CUSTOMER_TICKETS
+        df_customer = extract_itx_com_section('CUSTOMER_TICKETS', 'CT_TICKET')
+        if not df_customer.empty:
+            dataframes['CUSTOMER_TICKETS'] = df_customer
+
+        return dataframes
+
+    except Exception as e:
+        st.error(f"Erreur lors du parsing format ITX_COM: {str(e)}")
+        return {}
+
+
+def parse_standard_format(xml_content):
+    """Parse le format standard ItxCloseExport"""
+    try:
+        root = ET.fromstring(xml_content)
         dataframes = {}
 
         # Fonction helper pour extraire les données d'une section
@@ -151,8 +229,40 @@ def parse_xml_to_dataframes(xml_content, is_file_path=True):
         return dataframes
 
     except Exception as e:
-        st.error(f"Erreur lors du parsing XML: {str(e)}")
+        st.error(f"Erreur lors du parsing format standard: {str(e)}")
         return {}
+
+
+def parse_xml_to_dataframes(xml_content):
+    """Détecte le format et parse le contenu XML"""
+    try:
+        # Détecter le format
+        xml_format = detect_xml_format(xml_content)
+        
+        if xml_format == 'ITX_COM':
+            return parse_itx_com_format(xml_content), xml_format
+        elif xml_format == 'ITX_STANDARD':
+            return parse_standard_format(xml_content), xml_format
+        else:
+            st.warning("Format XML non reconnu. Tentative de parsing générique...")
+            # Essayer les deux formats
+            data_com = parse_itx_com_format(xml_content)
+            data_std = parse_standard_format(xml_content)
+            
+            # Prendre celui qui a le plus de données
+            total_com = sum(len(df) for df in data_com.values())
+            total_std = sum(len(df) for df in data_std.values())
+            
+            if total_com > total_std:
+                return data_com, 'ITX_COM (auto-détecté)'
+            elif total_std > 0:
+                return data_std, 'ITX_STANDARD (auto-détecté)'
+            else:
+                return {}, 'INCONNU'
+                
+    except Exception as e:
+        st.error(f"Erreur lors de la détection du format XML: {str(e)}")
+        return {}, 'ERREUR'
 
 
 def create_excel_file(dataframes):
@@ -170,17 +280,23 @@ def create_excel_file(dataframes):
 
 def main():
     # En-tête de l'application
-    st.markdown('<h1 class="main-header">🔄 XML/Excel (ItxCloseExport)</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">🔄 XML=>Excel</h1>', unsafe_allow_html=True)
 
     # Sidebar pour la configuration
     with st.sidebar:
-        st.markdown('<h3 style="font-weight: bold;">INDIGO COMPANY / INDITEX</h3>', unsafe_allow_html=True)
         st.markdown("### ⚙️ Configuration")
+        st.markdown("**INTTT**")
+        st.markdown('<h3 style="font-weight: bold;">INDIGO COMPANY / INDITEX</h3>', unsafe_allow_html=True)
         
         st.markdown("---")
         st.info("""
+        **Formats supportés:**
+        - ItxCloseExport (standard)
+        - ItxCloseExportCom (nouveau format)
+        
         **Fonctionnalités:**
         - Upload manuel des fichiers XML
+        - Détection automatique du format
         - Extraction de toutes les sections
         - Export Excel multi-onglets
         - Prévisualisation des données
@@ -210,6 +326,13 @@ def main():
                 with st.expander(f"{i}. {file.name} ({file_size:.1f} KB)"):
                     st.code(f"Taille: {file_size:.1f} KB")
                     st.caption(f"Type: {file.type}")
+                    
+                    # Afficher un aperçu du contenu XML
+                    try:
+                        content = file.getvalue().decode('utf-8')[:500] + "..." if len(content) > 500 else content
+                        st.text_area("Aperçu XML:", content[:500], height=150, key=f"preview_{i}")
+                    except:
+                        pass
 
     with col2:
         st.markdown("### 📈 Statistiques")
@@ -221,9 +344,10 @@ def main():
                 if uploaded_files:
                     sample_file = uploaded_files[0]
                     content = sample_file.getvalue().decode('utf-8')
-                    dataframes = parse_xml_to_dataframes(content, is_file_path=False)
+                    dataframes, xml_format = parse_xml_to_dataframes(content)
                     
                     if dataframes:
+                        st.markdown(f"#### Format détecté: **{xml_format}**")
                         st.markdown("#### Sections détectées:")
                         for sheet_name, df in dataframes.items():
                             st.markdown(f"- **{sheet_name}**: {len(df)} lignes")
@@ -237,6 +361,7 @@ def main():
 
         if st.button("🚀 Traiter tous les fichiers", type="primary", key="process_files"):
             all_results = {}
+            format_info = {}
 
             with st.spinner("Traitement en cours..."):
                 progress_bar = st.progress(0)
@@ -249,14 +374,19 @@ def main():
 
                         # Traiter le fichier
                         content = file_obj.getvalue().decode('utf-8')
-                        dataframes = parse_xml_to_dataframes(content, is_file_path=False)
+                        dataframes, xml_format = parse_xml_to_dataframes(content)
                         file_name = file_obj.name
+                        
+                        # Stocker le format détecté
+                        format_info[file_name] = xml_format
 
                         if dataframes:
                             all_results[file_name] = dataframes
 
                             # Afficher un aperçu
-                            with st.expander(f"📄 {file_name}", expanded=False):
+                            with st.expander(f"📄 {file_name} ({xml_format})", expanded=False):
+                                st.markdown(f"**Format:** {xml_format}")
+                                
                                 selected_sheet = st.selectbox(
                                     "Choisir une section à prévisualiser:",
                                     list(dataframes.keys()),
@@ -266,7 +396,7 @@ def main():
                                 if selected_sheet in dataframes:
                                     df_preview = dataframes[selected_sheet]
                                     st.dataframe(df_preview.head(10))
-                                    st.caption(f"Aperçu de {selected_sheet} ({len(df_preview)} lignes au total)")
+                                    st.caption(f"Aperçu de {selected_sheet} ({len(df_preview)} lignes, {len(df_preview.columns)} colonnes)")
 
                     except Exception as e:
                         st.error(f"Erreur avec {file_obj.name}: {str(e)}")
@@ -278,16 +408,27 @@ def main():
                     st.markdown("---")
                     st.markdown("### 💾 Exporter les résultats")
 
+                    # Résumé des formats
+                    st.markdown("#### 📋 Résumé des formats détectés:")
+                    format_counts = {}
+                    for fmt in format_info.values():
+                        format_counts[fmt] = format_counts.get(fmt, 0) + 1
+                    
+                    for fmt, count in format_counts.items():
+                        st.markdown(f"- **{fmt}**: {count} fichier(s)")
+
                     # Options d'export - SEULEMENT EXCEL
                     for file_name, dataframes in all_results.items():
                         base_name = os.path.splitext(file_name)[0]
+                        file_format = format_info.get(file_name, "INCONNU")
 
                         st.markdown(f"#### 📦 {file_name}")
+                        st.markdown(f"*Format: {file_format}*")
 
                         # Bouton Excel uniquement
                         excel_file = create_excel_file(dataframes)
                         st.download_button(
-                            label="📥 Télécharger Excel (.xlsx)",
+                            label=f"📥 Télécharger Excel (.xlsx)",
                             data=excel_file,
                             file_name=f"{base_name}_export.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -303,6 +444,11 @@ def main():
                         for file_data in all_results.values()
                         for df in file_data.values()
                     )
+                    total_sections = sum(
+                        len(file_data)
+                        for file_data in all_results.values()
+                    )
+                    st.markdown(f"**Sections extraites:** {total_sections}")
                     st.markdown(f"**Lignes extraites au total:** {total_rows:,}")
                     st.markdown("</div>", unsafe_allow_html=True)
 
