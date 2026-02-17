@@ -40,6 +40,14 @@ st.markdown("""
         border-radius: 8px;
         margin: 1rem 0;
     }
+    .success-box {
+        background: #d4edda;
+        border: 1px solid #c3e6cb;
+        color: #155724;
+        padding: 1rem;
+        border-radius: 8px;
+        margin: 1rem 0;
+    }
     .stProgress > div > div > div > div {
         background-color: #667eea;
     }
@@ -53,6 +61,14 @@ st.markdown("""
     <p>Transformez vos fichiers XML de caisse en fichiers Excel structurés</p>
 </div>
 """, unsafe_allow_html=True)
+
+# INITIALISATION DE LA SESSION
+if 'results' not in st.session_state:
+    st.session_state.results = {}
+if 'processing_complete' not in st.session_state:
+    st.session_state.processing_complete = False
+if 'failed_files' not in st.session_state:
+    st.session_state.failed_files = []
 
 # Fonctions de validation
 def validate_files(uploaded_files):
@@ -69,11 +85,9 @@ def validate_files(uploaded_files):
     
     return valid_files, large_files
 
-# FONCTION CORRIGÉE - PARSING ROBUSTE DES SALE LINES
 def parse_xml_in_chunks(xml_content, chunk_size=200):
     """
     Parse un fichier XML ItxCloseExport par lots de TICKETS.
-    Version corrigée avec recherche approfondie des SALE_LINES.
     """
     try:
         root = ET.fromstring(xml_content)
@@ -130,7 +144,7 @@ def parse_xml_in_chunks(xml_content, chunk_size=200):
                 
                 tickets_data.append(ticket_dict)
                 
-                # --- 2. CRITIQUE : Extraction des SALE_LINES (version robuste) ---
+                # --- 2. Extraction des SALE_LINES ---
                 # Chercher les LINE dans SALE_LINES ou directement sous TICKET
                 line_elements = []
                 
@@ -139,12 +153,8 @@ def parse_xml_in_chunks(xml_content, chunk_size=200):
                 if sale_lines is not None:
                     line_elements.extend(sale_lines.findall('LINE'))
                 
-                # Méthode 2: Chercher directement sous TICKET (au cas où)
+                # Méthode 2: Chercher directement sous TICKET
                 line_elements.extend(ticket_elem.findall('LINE'))
-                
-                # DEBUG: Afficher le nombre de lignes trouvées
-                if ticket_idx == 0 and i == 0:
-                    st.sidebar.info(f"🔍 Lignes trouvées dans premier ticket: {len(line_elements)}")
                 
                 for line_elem in line_elements:
                     line_dict = {}
@@ -166,7 +176,7 @@ def parse_xml_in_chunks(xml_content, chunk_size=200):
                         'subFamilyCode', 'period', 'departmentId', 'quantity', 
                         'orgPrice', 'price', 'employeeId', 'isVoidLine', 
                         'operationTypeGroup', 'lineType', 'controlCode', 'productTypeId',
-                        'voidLine'  # Pour les lignes annulées
+                        'voidLine'
                     ]
                     
                     for field in line_fields:
@@ -176,7 +186,7 @@ def parse_xml_in_chunks(xml_content, chunk_size=200):
                         else:
                             line_dict[field] = ""
                     
-                    # --- Extraire les taxes (LINE_TAX_LIST) ---
+                    # --- Extraire les taxes ---
                     tax_list = []
                     tax_list_elem = line_elem.find('LINE_TAX_LIST')
                     if tax_list_elem is not None:
@@ -187,7 +197,7 @@ def parse_xml_in_chunks(xml_content, chunk_size=200):
                     
                     line_dict['taxes'] = '|'.join(tax_list) if tax_list else ""
                     
-                    # --- Extraire les promotions (PROMOTION_LIST) ---
+                    # --- Extraire les promotions ---
                     promo_list = []
                     promo_list_elem = line_elem.find('PROMOTION_LIST')
                     if promo_list_elem is not None:
@@ -254,7 +264,6 @@ def parse_xml_in_chunks(xml_content, chunk_size=200):
                         ticket_auths_data.append(auth_dict)
             
             except Exception as e:
-                st.sidebar.error(f"⚠️ Erreur sur ticket {ticket_idx+1} dans lot {i//chunk_size + 1}: {str(e)[:100]}")
                 continue
         
         # Créer les DataFrames pour ce lot
@@ -262,11 +271,9 @@ def parse_xml_in_chunks(xml_content, chunk_size=200):
         
         if tickets_data:
             chunk_dfs['TICKETS'] = pd.DataFrame(tickets_data)
-            st.sidebar.info(f"📊 Lot {i//chunk_size + 1}: {len(tickets_data)} tickets")
         
         if lines_data:
             chunk_dfs['SALE_LINES'] = pd.DataFrame(lines_data)
-            st.sidebar.info(f"📝 Lot {i//chunk_size + 1}: {len(lines_data)} lignes de vente")
         
         if ticket_data_list:
             chunk_dfs['TICKET_DATA'] = pd.DataFrame(ticket_data_list)
@@ -294,7 +301,6 @@ def create_excel_file(dataframes_dict):
             sheets_created = 0
             for sheet_name, df in dataframes_dict.items():
                 if not df.empty:
-                    # Limiter le nom de la feuille à 31 caractères
                     safe_sheet_name = sheet_name[:31]
                     df.to_excel(writer, sheet_name=safe_sheet_name, index=False)
                     sheets_created += 1
@@ -319,7 +325,6 @@ def create_excel_file(dataframes_dict):
         return output
     
     except Exception as e:
-        st.error(f"❌ Erreur Excel : {str(e)}")
         return None
 
 # Interface principale
@@ -334,6 +339,23 @@ with col1:
     * Fichiers Excel multiples
     * Support des SALE_LINES
     """)
+    
+    # Afficher un résumé si des résultats existent
+    if st.session_state.results:
+        total_lots = sum(len(r) for r in st.session_state.results.values())
+        total_tickets = sum(lot['tickets'] for r in st.session_state.results.values() for lot in r)
+        total_lines = sum(lot['lines'] for r in st.session_state.results.values() for lot in r)
+        
+        st.markdown("### 📈 Résultats en mémoire")
+        st.metric("Fichiers XML", len(st.session_state.results))
+        st.metric("Fichiers Excel", total_lots)
+        st.metric("Lignes de vente", f"{total_lines:,}")
+        
+        if st.button("🔄 Nouveau traitement", use_container_width=True):
+            st.session_state.results = {}
+            st.session_state.processing_complete = False
+            st.session_state.failed_files = []
+            st.rerun()
 
 with col2:
     st.markdown("### 📁 Upload de fichiers")
@@ -345,7 +367,7 @@ with col2:
         help="Sélectionnez vos fichiers XML ItxCloseExport"
     )
     
-    if uploaded_files:
+    if uploaded_files and not st.session_state.processing_complete:
         valid_files, large_files = validate_files(uploaded_files)
         
         if valid_files:
@@ -371,11 +393,12 @@ with col2:
             
             # Bouton de traitement
             if st.button("🚀 Démarrer le traitement", type="primary", use_container_width=True):
-                results = {}
-                failed_files = []
+                # Réinitialiser les résultats précédents
+                st.session_state.results = {}
+                st.session_state.failed_files = []
                 
                 # Barre de progression
-                main_progress = st.progress(0)
+                progress_bar = st.progress(0)
                 status_text = st.empty()
                 
                 for file_idx, file_obj in enumerate(valid_files):
@@ -389,12 +412,12 @@ with col2:
                         for chunk_num, total_tickets, chunk_dfs in parse_xml_in_chunks(content, chunk_size):
                             
                             # Mise à jour progression
-                            progress = (file_idx + chunk_num * chunk_size / max(1, total_tickets)) / len(valid_files)
-                            main_progress.progress(min(progress, 0.99))
+                            progress = (file_idx + (chunk_num * chunk_size) / max(1, total_tickets)) / len(valid_files)
+                            progress_bar.progress(min(progress, 0.99))
                             
                             status_text.text(f"🔄 Lot {chunk_num} de {file_obj.name}...")
                             
-                            if chunk_dfs and 'SALE_LINES' in chunk_dfs:
+                            if chunk_dfs:
                                 excel_file = create_excel_file(chunk_dfs)
                                 
                                 if excel_file:
@@ -402,83 +425,94 @@ with col2:
                                         'chunk_num': chunk_num,
                                         'excel_data': excel_file,
                                         'tickets': len(chunk_dfs.get('TICKETS', pd.DataFrame())),
-                                        'lines': len(chunk_dfs.get('SALE_LINES', pd.DataFrame()))
-                                    })
-                            elif chunk_dfs:
-                                # Même sans SALE_LINES, on garde les autres données
-                                excel_file = create_excel_file(chunk_dfs)
-                                if excel_file:
-                                    file_results.append({
-                                        'chunk_num': chunk_num,
-                                        'excel_data': excel_file,
-                                        'tickets': len(chunk_dfs.get('TICKETS', pd.DataFrame())),
-                                        'lines': 0
+                                        'lines': len(chunk_dfs.get('SALE_LINES', pd.DataFrame())),
+                                        'filename': file_obj.name
                                     })
                         
                         if file_results:
-                            results[file_obj.name] = file_results
+                            st.session_state.results[file_obj.name] = file_results
                             status_text.text(f"✅ {file_obj.name}: {len(file_results)} lots")
                         else:
-                            failed_files.append(f"{file_obj.name} (aucune donnée)")
+                            st.session_state.failed_files.append(f"{file_obj.name} (aucune donnée)")
                     
                     except Exception as e:
-                        failed_files.append(f"{file_obj.name} ({str(e)[:50]})")
+                        st.session_state.failed_files.append(f"{file_obj.name} ({str(e)[:50]})")
                         continue
                 
-                main_progress.empty()
+                progress_bar.empty()
                 status_text.empty()
-                
-                # Affichage des résultats
-                if results:
-                    st.markdown("---")
-                    st.markdown("### ✅ Traitement terminé")
-                    
-                    total_lots = sum(len(r) for r in results.values())
-                    total_tickets = sum(lot['tickets'] for r in results.values() for lot in r)
-                    total_lines = sum(lot['lines'] for r in results.values() for lot in r)
-                    
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("Fichiers XML", len(results))
-                    with col2:
-                        st.metric("Fichiers Excel", total_lots)
-                    with col3:
-                        st.metric("Tickets", f"{total_tickets:,}")
-                    with col4:
-                        st.metric("Lignes de vente", f"{total_lines:,}")
-                    
-                    st.markdown("### 💾 Téléchargements")
-                    
-                    for file_name, chunks_info in results.items():
-                        base_name = os.path.splitext(file_name)[0]
-                        
-                        with st.expander(f"📁 {file_name} - {len(chunks_info)} lots"):
-                            cols = st.columns(3)
-                            for i, chunk_info in enumerate(chunks_info):
-                                with cols[i % 3]:
-                                    label = f"Lot {chunk_info['chunk_num']}"
-                                    if chunk_info['lines'] > 0:
-                                        label += f" ({chunk_info['lines']} lignes)"
-                                    
-                                    st.download_button(
-                                        label=label,
-                                        data=chunk_info['excel_data'],
-                                        file_name=f"{base_name}_part{chunk_info['chunk_num']:03d}.xlsx",
-                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                        key=f"dl_{hashlib.md5(f'{file_name}_{chunk_info["chunk_num"]}'.encode()).hexdigest()[:8]}",
-                                        use_container_width=True
-                                    )
-                    
-                    st.balloons()
-                    st.success("🎉 Traitement terminé avec succès !")
-                    
-                    if failed_files:
-                        with st.expander("⚠️ Fichiers en erreur"):
-                            for f in failed_files:
-                                st.write(f"• {f}")
+                st.session_state.processing_complete = True
+                st.rerun()
+    
+    # AFFICHAGE DES RÉSULTATS STOCKÉS
+    if st.session_state.results:
+        st.markdown("---")
+        st.markdown("""
+        <div class="success-box">
+            <strong>✅ Traitement terminé !</strong><br>
+            Tous les lots sont disponibles ci-dessous. Vous pouvez télécharger chaque lot individuellement.
+        </div>
+        """, unsafe_allow_html=True)
         
-        else:
-            st.info("📝 Veuillez sélectionner des fichiers XML")
+        # Statistiques globales
+        total_lots = sum(len(r) for r in st.session_state.results.values())
+        total_tickets = sum(lot['tickets'] for r in st.session_state.results.values() for lot in r)
+        total_lines = sum(lot['lines'] for r in st.session_state.results.values() for lot in r)
+        
+        col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+        with col_s1:
+            st.metric("Fichiers XML", len(st.session_state.results))
+        with col_s2:
+            st.metric("Fichiers Excel", total_lots)
+        with col_s3:
+            st.metric("Tickets", f"{total_tickets:,}")
+        with col_s4:
+            st.metric("Lignes de vente", f"{total_lines:,}")
+        
+        st.markdown("### 💾 Téléchargements")
+        
+        # Afficher les lots par fichier source
+        for file_name, chunks_info in st.session_state.results.items():
+            base_name = os.path.splitext(file_name)[0]
+            
+            with st.expander(f"📁 {file_name} - {len(chunks_info)} lots", expanded=True):
+                # Organiser les lots en grille
+                cols = st.columns(4)
+                for i, chunk_info in enumerate(chunks_info):
+                    with cols[i % 4]:
+                        # Créer un label descriptif
+                        label = f"📊 Lot {chunk_info['chunk_num']}"
+                        if chunk_info['lines'] > 0:
+                            label += f"\n({chunk_info['lines']} lignes)"
+                        else:
+                            label += "\n(0 ligne)"
+                        
+                        # Bouton de téléchargement avec clé unique
+                        st.download_button(
+                            label=label,
+                            data=chunk_info['excel_data'],
+                            file_name=f"{base_name}_part{chunk_info['chunk_num']:03d}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key=f"dl_{hashlib.md5(f'{file_name}_{chunk_info["chunk_num"]}'.encode()).hexdigest()[:8]}",
+                            use_container_width=True
+                        )
+                
+                # Ajouter une ligne de séparation
+                if len(chunks_info) > 4:
+                    st.markdown("<br>", unsafe_allow_html=True)
+        
+        # Afficher les erreurs s'il y en a
+        if st.session_state.failed_files:
+            with st.expander("⚠️ Fichiers en erreur"):
+                for f in st.session_state.failed_files:
+                    st.write(f"• {f}")
+        
+        # Option pour réinitialiser
+        if st.button("🔄 Effacer les résultats et recommencer", use_container_width=True):
+            st.session_state.results = {}
+            st.session_state.processing_complete = False
+            st.session_state.failed_files = []
+            st.rerun()
 
 with col3:
     st.markdown("### ℹ️ Aide")
@@ -487,7 +521,9 @@ with col3:
         1. **Sélectionnez** vos fichiers XML
         2. **Ajustez** la taille des lots
         3. **Cliquez** sur Démarrer
-        4. **Téléchargez** les fichiers Excel
+        4. **Téléchargez** chaque lot
+        
+        **Important :** Les résultats restent en mémoire pendant toute la session. Vous pouvez télécharger tous les lots un par un.
         """)
     
     with st.expander("Structure des données"):
@@ -500,10 +536,19 @@ with col3:
         * `TICKET_COUNTERS` : Compteurs
         * `TICKET_AUTHS` : Autorisations
         """)
+    
+    with st.expander("Pourquoi plusieurs lots ?"):
+        st.markdown("""
+        Les gros fichiers XML sont découpés en plusieurs fichiers Excel pour :
+        * Éviter les problèmes de mémoire
+        * Rester sous la limite Excel (1M lignes)
+        * Permettre des téléchargements plus rapides
+        * Faciliter l'analyse par période
+        """)
 
 # Footer
 st.markdown("---")
 st.markdown(
-    "<div style='text-align: center; color: #666;'><small>Convertisseur XML ItxCloseExport v2.1</small></div>",
+    "<div style='text-align: center; color: #666;'><small>Convertisseur XML ItxCloseExport v2.2 - Conservation des résultats en mémoire</small></div>",
     unsafe_allow_html=True
 )
