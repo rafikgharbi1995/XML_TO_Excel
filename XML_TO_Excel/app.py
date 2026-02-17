@@ -2,82 +2,136 @@ import streamlit as st
 import pandas as pd
 import xml.etree.ElementTree as ET
 import io
+import hashlib
+import time
+import gc
 
-def safe_float(value):
-    if value is None: return 0.0
-    try:
-        return float(str(value).replace(',', '.'))
-    except:
-        return 0.0
+# ================= CONFIGURATION SÉCURITÉ =================
+APP_PASSWORD = "Indigo2025**"
+PASSWORD_HASH = hashlib.sha256(APP_PASSWORD.encode()).hexdigest()
 
-def analyze_xml_headers(file_obj):
-    file_obj.seek(0)
-    tree = ET.parse(file_obj)
-    root = tree.getroot()
-    
-    ticket_data = []
-    
-    # On cherche les balises TICKET (En-tête)
-    # C'est ici que l'ETL trouve généralement le vrai montant
-    for ticket in root.iter():
-        if ticket.tag in ['TICKET', 'VALID_TICKET', 'SALE']:
-            
-            # 1. On cherche les différentes valeurs de total stockées dans l'en-tête
-            total_ttc = safe_float(ticket.findtext('totalSale') or ticket.findtext('TOTAL_AMOUNT') or ticket.findtext('totalAmount'))
-            total_net = safe_float(ticket.findtext('totalNet') or ticket.findtext('TOTAL_NET'))
-            total_tax = safe_float(ticket.findtext('taxAmount') or ticket.findtext('TAX_AMOUNT'))
-            
-            # Parfois la taxe est dans une sous-balise TAXES
-            if total_tax == 0:
-                tax_elem = ticket.find('.//TAX_AMOUNT') or ticket.find('.//taxValue')
-                if tax_elem is not None:
-                    total_tax = safe_float(tax_elem.text)
+# 🔐 AUTHENTIFICATION (Identique à votre code)
+def check_authentication():
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+        st.session_state.auth_time = None
+    if st.session_state.authenticated and st.session_state.auth_time:
+        if time.time() - st.session_state.auth_time < 4 * 3600:
+            return True
+    return False
 
-            # On n'ajoute que si le ticket a une valeur
-            if total_ttc != 0 or total_net != 0:
-                ticket_data.append({
-                    'Ticket_ID': ticket.get('TICKETNUMBER') or ticket.get('TICKET_ID') or ticket.findtext('serial'),
-                    'Total_TTC_Header': total_ttc,
-                    'Total_Net_Header': total_net,
-                    'Taxe_Header': total_tax,
-                    'Calcul_Verif': total_net + total_tax
-                })
-
-    return pd.DataFrame(ticket_data)
-
-st.set_page_config(layout="wide")
-st.title("🔍 Recherche du Montant ETL Manquant")
-
-file = st.file_uploader("Charger le XML", type=['xml'])
-
-if file:
-    df_headers = analyze_xml_headers(file)
-    
-    if not df_headers.empty:
-        st.subheader("Analyse des En-têtes (Tickets)")
-        
-        sum_ttc = df_headers['Total_TTC_Header'].sum()
-        sum_net = df_headers['Total_Net_Header'].sum()
-        sum_tax = df_headers['Taxe_Header'].sum()
-        
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Somme TTC Header", f"{sum_ttc:,.2f}")
-        c2.metric("Somme Net Header", f"{sum_net:,.2f}")
-        c3.metric("Somme Taxes Header", f"{sum_tax:,.2f}")
-        c4.metric("Cible ETL", "180,173.38")
-
-        # Calcul de l'écart
-        diff = 180173.38 - sum_ttc
-        if abs(diff) < 1:
-            st.success("🎯 MATCH ! Le montant TTC des en-têtes correspond à l'ETL.")
+def show_login_page():
+    st.set_page_config(page_title="Authentification", page_icon="🔒", layout="centered")
+    st.markdown('<h3 style="text-align: center; color: #1E3A8A;">Authentification INDIGO</h3>', unsafe_allow_html=True)
+    password = st.text_input("Mot de passe :", type="password")
+    if st.button("🔓 Se connecter", type="primary", use_container_width=True):
+        if hashlib.sha256(password.encode()).hexdigest() == PASSWORD_HASH:
+            st.session_state.authenticated = True
+            st.session_state.auth_time = time.time()
+            st.rerun()
         else:
-            st.error(f"❌ Écart de {diff:,.2f} par rapport à l'ETL")
-            
-        st.write("### Détail des 50 premiers tickets")
-        st.dataframe(df_headers.head(50))
+            st.error("❌ Mot de passe incorrect")
+    st.stop()
+
+if not check_authentication():
+    show_login_page()
+
+# ================= FONCTION DE TRANSFORMATION AUTOMATIQUE =================
+
+def parse_xml_dynamic(file_obj):
+    """Transforme le XML en Excel en prenant TOUTES les colonnes automatiquement"""
+    try:
+        file_obj.seek(0)
+        tree = ET.parse(file_obj) # Plus rapide et moins de mémoire que fromstring
+        root = tree.getroot()
         
-        # Option pour voir si la taxe est la clé
-        if sum_tax > 0:
-            st.info(f"Note : La taxe totale trouvée est de {sum_tax:,.2f}. Si on l'ajoute à votre ancien montant, est-on plus proche ?")
-    else:
-        st.error("Aucune balise de total (totalSale/TOTAL_AMOUNT) n'a été trouvée dans les en-têtes.")
+        dataframes = {}
+
+        # On cherche les sections principales (Ventes, Tickets, Paiements)
+        # On définit les balises qui contiennent des lignes de données
+        sections_to_extract = {
+            'SALE_LINES': ['.//LINE', './/ITEM', './/SALE_LINE'],
+            'TICKETS': ['.//TICKET', './/VALID_TICKET'],
+            'MEDIA_LINES': ['.//MEDIA', './/PAYMENT'],
+            'TRANSACTIONS': ['.//TRANSACTION'],
+            'STORE_INFO': ['.//STORE_INFO']
+        }
+
+        for sheet_name, xpaths in sections_to_extract.items():
+            all_rows = []
+            for xpath in xpaths:
+                elements = root.findall(xpath)
+                for elem in elements:
+                    # EXTRACTION DYNAMIQUE : On prend tout ce qui existe dans la balise
+                    row = {}
+                    
+                    # 1. On prend les attributs (ex: STOREID, TICKETNUMBER)
+                    row.update(elem.attrib)
+                    
+                    # 2. On prend tous les enfants (ex: price, barcode, taxAmount, etc.)
+                    for child in elem:
+                        # Si l'enfant a lui-même des enfants, on peut concaténer (optionnel)
+                        if len(child) == 0:
+                            row[child.tag] = child.text
+                        else:
+                            # Pour les sous-balises (comme les taxes complexes)
+                            for subchild in child:
+                                row[f"{child.tag}_{subchild.tag}"] = subchild.text
+                    
+                    all_rows.append(row)
+            
+            if all_rows:
+                # Création du DataFrame et conversion automatique des chiffres
+                df = pd.DataFrame(all_rows)
+                for col in df.columns:
+                    df[col] = pd.to_numeric(df[col].str.replace(',', '.'), errors='ignore')
+                dataframes[sheet_name] = df
+
+        # Nettoyage mémoire
+        del root
+        del tree
+        gc.collect()
+        
+        return dataframes
+    except Exception as e:
+        st.error(f"Erreur lors de la lecture du XML : {e}")
+        return None
+
+def create_excel(dataframes):
+    """Génère le fichier Excel"""
+    output = io.BytesIO()
+    try:
+        # On utilise xlsxwriter car il est plus léger pour les gros fichiers
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            for sheet_name, df in dataframes.items():
+                df.to_excel(writer, sheet_name=sheet_name, index=False)
+        output.seek(0)
+        return output
+    except:
+        return None
+
+# ================= INTERFACE =================
+
+st.set_page_config(page_title="XML/Excel Converter", layout="wide")
+st.markdown('<h1 style="text-align: center; color: #1E3A8A;">🔄 XML vers Excel PRO</h1>', unsafe_allow_html=True)
+
+uploaded_files = st.file_uploader("Sélectionnez vos fichiers XML", type=['xml'], accept_multiple_files=True)
+
+if uploaded_files:
+    if st.button("🚀 Transformer en Excel", type="primary", use_container_width=True):
+        for file in uploaded_files:
+            with st.spinner(f"Traitement de {file.name}..."):
+                dfs = parse_xml_dynamic(file)
+                if dfs:
+                    excel_file = create_excel(dfs)
+                    if excel_file:
+                        st.success(f"✅ {file.name} terminé !")
+                        st.download_button(
+                            label=f"📥 Télécharger {file.name}.xlsx",
+                            data=excel_file,
+                            file_name=f"{file.name}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key=file.name
+                        )
+                else:
+                    st.error(f"Impossible de lire {file.name}")
