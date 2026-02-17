@@ -2,149 +2,96 @@ import streamlit as st
 import pandas as pd
 import xml.etree.ElementTree as ET
 import io
-import hashlib
-import time
 import gc
 
-# ================= CONFIGURATION =================
-APP_PASSWORD = "Indigo2025**"
-PASSWORD_HASH = hashlib.sha256(APP_PASSWORD.encode()).hexdigest()
-
-def check_authentication():
-    if "authenticated" not in st.session_state:
-        st.session_state.authenticated = False
-    return st.session_state.authenticated
-
-def show_login_page():
-    st.title("🔒 Connexion")
-    password = st.text_input("Mot de passe :", type="password")
-    if st.button("Se connecter"):
-        if hashlib.sha256(password.encode()).hexdigest() == PASSWORD_HASH:
-            st.session_state.authenticated = True
-            st.rerun()
-        else:
-            st.error("Incorrect")
-    st.stop()
-
-# ================= MOTEUR D'EXTRACTION DE PRÉCISION =================
-
 def safe_float(value):
-    """Convertit proprement les textes en nombres pour Excel"""
     if value is None: return 0.0
     try:
         return float(str(value).replace(',', '.'))
     except:
         return 0.0
 
-def parse_xml_deep(file_obj):
-    """Analyse récursive pour ne rater aucune ligne de vente"""
+def parse_xml_expert(file_obj):
     file_obj.seek(0)
     try:
         tree = ET.parse(file_obj)
         root = tree.getroot()
         
-        results = {
-            'VENTES_DETAILS': [],
-            'TICKETS_RECAP': [],
-            'PAIEMENTS': [],
-            'ANNULATIONS': []
-        }
+        all_lines = []
 
-        # 1. EXTRACTION DES LIGNES DE VENTE (SALE_LINES / ITEM)
-        # On cherche partout dans le document pour ne rien rater
+        # On parcourt TOUTES les balises qui ressemblent à une ligne de transaction
+        # Inditex utilise souvent 'LINE' ou 'ITEM'
         for line in root.iter():
-            # Format Standard (LINE) ou Format COM (ITEM)
-            if line.tag in ['LINE', 'ITEM']:
-                parent_ticket = None
-                # Tentative de récupération des infos du ticket parent (remonte l'arbre)
-                # Note: Cette partie dépend de la structure, on prend les attributs si dispo
+            if line.tag in ['LINE', 'ITEM', 'RETURN_LINE', 'SALE_LINE']:
+                
+                # On récupère TOUTES les variantes de prix possibles dans le XML
+                qty = safe_float(line.findtext('quantity') or line.findtext('qty') or line.get('quantity'))
+                unit_price = safe_float(line.findtext('price') or line.findtext('unitPrice'))
+                gross_price = safe_float(line.findtext('orgPrice') or line.findtext('grossPrice'))
+                net_amount = safe_float(line.findtext('netAmount') or line.findtext('totalNet'))
+                tax_amount = safe_float(line.findtext('taxAmount') or line.findtext('tax'))
+                discount = safe_float(line.findtext('discountAmount') or line.findtext('discount'))
+                
+                # Détection du type de ligne (Vente ou Retour)
+                line_type = line.findtext('lineType') or line.tag
+                # Si c'est un retour, la quantité doit souvent être négative
+                if 'RETURN' in line_type.upper() and qty > 0:
+                    qty = -qty
+
                 data = {
-                    'Ticket_ID': line.get('TICKETNUMBER') or line.get('TICKET_ID'),
-                    'Barcode': (line.findtext('barcode') or line.findtext('BARCODE') or line.findtext('REFERENCE')),
-                    'Description': (line.findtext('description') or line.findtext('DESCRIPTION')),
-                    'Quantite': safe_float(line.findtext('quantity') or line.findtext('QUANTITY') or line.get('quantity')),
-                    'Prix_Unitaire': safe_float(line.findtext('price') or line.findtext('PRICE') or line.get('price')),
-                    'Total_Ligne': safe_float(line.findtext('total') or 0.0),
-                    'Date': line.findtext('date') or line.findtext('DATE'),
-                    'Est_Annule': line.findtext('isVoidLine') or 'false'
+                    'Ticket_ID': line.get('TICKETNUMBER') or line.get('TICKET_ID') or line.findtext('serial'),
+                    'Type': line_type,
+                    'Ref': line.findtext('barcode') or line.findtext('REFERENCE'),
+                    'Quantite': qty,
+                    'Prix_Unitaire_XML': unit_price,
+                    'Prix_Brut_XML': gross_price,
+                    'Remise_XML': discount,
+                    'Taxe_XML': tax_amount,
+                    # Calculs de vérification
+                    'Total_Brut_Calcule': qty * unit_price,
+                    'Total_Net_Calcule': (qty * unit_price) - discount + tax_amount,
                 }
-                # Calcul de vérification automatique
-                data['Verif_Calcul_Total'] = data['Quantite'] * data['Prix_Unitaire']
-                results['VENTES_DETAILS'].append(data)
+                all_lines.append(data)
 
-            # 2. EXTRACTION DES RÉCAPITULATIFS TICKETS (VALID_TICKETS)
-            elif line.tag in ['TICKET', 'VALID_TICKET']:
-                if line.findtext('totalSale') or line.findtext('TOTAL_AMOUNT'):
-                    t_data = {
-                        'Ticket_ID': line.get('TICKETNUMBER') or line.get('TICKET_ID') or line.findtext('serial'),
-                        'Date': line.findtext('date'),
-                        'Heure': line.findtext('time'),
-                        'Total_TTC': safe_float(line.findtext('totalSale') or line.findtext('TOTAL_AMOUNT')),
-                        'Total_Net': safe_float(line.findtext('totalNet')),
-                        'Vendeur': line.findtext('operatorId') or line.findtext('EMPLOYEE_ID'),
-                        'Statut_Annule': line.findtext('isVoidTicket') or 'false'
-                    }
-                    results['TICKETS_RECAP'].append(t_data)
-
-            # 3. PAIEMENTS (MEDIA_LINES)
-            elif line.tag in ['MEDIA', 'PAYMENT']:
-                p_data = {
-                    'Ticket_ID': line.get('TICKETNUMBER'),
-                    'Mode_Paiement': line.findtext('paymentMethod') or line.findtext('MEDIA_ID'),
-                    'Montant': safe_float(line.findtext('paid') or line.findtext('AMOUNT'))
-                }
-                results['PAIEMENTS'].append(p_data)
-
-        # Conversion en DataFrames
-        output_dfs = {}
-        for key, rows in results.items():
-            if rows:
-                output_dfs[key] = pd.DataFrame(rows)
-        
-        return output_dfs
-
+        return pd.DataFrame(all_lines)
     except Exception as e:
-        st.error(f"Erreur technique : {e}")
+        st.error(f"Erreur : {e}")
         return None
 
-# ================= INTERFACE =================
+# --- Interface Streamlit ---
+st.set_page_config(layout="wide")
+st.title("🔍 Diagnostic de Différence ETL")
 
-if not check_authentication():
-    show_login_page()
+file = st.file_uploader("Charger le XML de 7.8 Mo", type=['xml'])
 
-st.set_page_config(page_title="Indigo Precision Tool", layout="wide")
-st.title("📊 Extracteur XML Haute Précision")
-st.markdown("Ce mode analyse chaque balise du fichier pour garantir qu'aucun ticket n'est oublié.")
+if file:
+    df = parse_xml_expert(file)
+    
+    if df is not None:
+        # Affichage des totaux pour diagnostic
+        col1, col2, col3 = st.columns(3)
+        
+        total_brut = df['Total_Brut_Calcule'].sum()
+        total_net = df['Total_Net_Calcule'].sum()
+        
+        col1.metric("Votre Total Actuel (Brut)", f"{total_brut:,.2f}")
+        col2.metric("Total Net (Avec Taxe/Remise)", f"{total_net:,.2f}")
+        col3.metric("Cible ETL", "180,173.38")
 
-uploaded_files = st.file_uploader("Charger fichiers XML", type=['xml'], accept_multiple_files=True)
+        st.write("### Analyse des écarts")
+        diff_brut = 180173.38 - total_brut
+        diff_net = 180173.38 - total_net
+        
+        st.warning(f"Écart restant si on utilise le Net + Taxes : **{diff_net:,.2f}**")
 
-if uploaded_files:
-    for file in uploaded_files:
-        with st.expander(f"📁 Analyse de {file.name}", expanded=True):
-            dfs = parse_xml_deep(file)
-            
-            if dfs and 'VENTES_DETAILS' in dfs:
-                df_ventes = dfs['VENTES_DETAILS']
-                
-                # Statistiques de contrôle
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Lignes trouvées", len(df_ventes))
-                col2.metric("Total Quantités", f"{df_ventes['Quantite'].sum():.0f}")
-                col3.metric("Valeur Totale", f"{df_ventes['Verif_Calcul_Total'].sum():.2f} €")
-
-                # Bouton de téléchargement
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    for sheet_name, df in dfs.items():
-                        df.to_excel(writer, sheet_name=sheet_name, index=False)
-                
-                st.download_button(
-                    label="📥 Télécharger l'Excel complet",
-                    data=output.getvalue(),
-                    file_name=f"PRECISION_{file.name}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-                
-                st.success(f"Analyse terminée. Vérifiez la colonne 'Verif_Calcul_Total' dans l'Excel.")
-            else:
-                st.error("Aucune donnée de vente trouvée dans ce format XML.")
+        # Export Excel complet pour audit
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            df.to_excel(writer, index=False, sheet_name='Audit_Details')
+        
+        st.download_button("📥 Télécharger l'Audit complet pour comparer avec l'ETL", 
+                           output.getvalue(), 
+                           file_name="audit_indigo.xlsx")
+        
+        st.write("#### Aperçu des données extraites :")
+        st.dataframe(df.head(100))
