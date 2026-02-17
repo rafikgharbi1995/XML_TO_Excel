@@ -5,196 +5,146 @@ import io
 import hashlib
 import time
 import gc
-import os
 
-# ================= CONFIGURATION SÉCURITÉ =================
+# ================= CONFIGURATION =================
 APP_PASSWORD = "Indigo2025**"
 PASSWORD_HASH = hashlib.sha256(APP_PASSWORD.encode()).hexdigest()
 
-# ================= SYSTÈME D'AUTHENTIFICATION =================
 def check_authentication():
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
-        st.session_state.auth_time = None
-    
-    if st.session_state.authenticated and st.session_state.auth_time:
-        if time.time() - st.session_state.auth_time < 4 * 3600: # 4 heures
-            return True
-    return False
+    return st.session_state.authenticated
 
 def show_login_page():
-    st.set_page_config(page_title="Connexion Indigo", page_icon="🔒", layout="centered")
-    st.markdown("""
-        <style>
-        .login-box { padding: 2rem; border-radius: 10px; border: 1px solid #ddd; background: #f9f9f9; }
-        </style>
-    """, unsafe_allow_html=True)
-    
-    with st.container():
-        st.title("🔒 Accès Sécurisé")
-        st.write("Convertisseur XML vers Excel - INDIGO COMPANY")
-        password = st.text_input("Mot de passe :", type="password")
-        if st.button("Se connecter", use_container_width=True):
-            if hashlib.sha256(password.encode()).hexdigest() == PASSWORD_HASH:
-                st.session_state.authenticated = True
-                st.session_state.auth_time = time.time()
-                st.rerun()
-            else:
-                st.error("Mot de passe incorrect")
+    st.title("🔒 Connexion")
+    password = st.text_input("Mot de passe :", type="password")
+    if st.button("Se connecter"):
+        if hashlib.sha256(password.encode()).hexdigest() == PASSWORD_HASH:
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error("Incorrect")
     st.stop()
 
-# ================= MOTEUR DE TRAITEMENT OPTIMISÉ =================
+# ================= MOTEUR D'EXTRACTION DE PRÉCISION =================
 
-def parse_xml_smart(file_obj):
-    """Analyse le XML en mode mémoire optimisé"""
+def safe_float(value):
+    """Convertit proprement les textes en nombres pour Excel"""
+    if value is None: return 0.0
     try:
-        # On utilise ET.parse(file) au lieu de ET.fromstring(content)
-        # Cela permet de lire le fichier sans charger le texte brut en RAM
-        file_obj.seek(0)
+        return float(str(value).replace(',', '.'))
+    except:
+        return 0.0
+
+def parse_xml_deep(file_obj):
+    """Analyse récursive pour ne rater aucune ligne de vente"""
+    file_obj.seek(0)
+    try:
         tree = ET.parse(file_obj)
         root = tree.getroot()
-        root_tag = root.tag
         
-        dataframes = {}
+        results = {
+            'VENTES_DETAILS': [],
+            'TICKETS_RECAP': [],
+            'PAIEMENTS': [],
+            'ANNULATIONS': []
+        }
 
-        # 1. Détecter si c'est le format ITX_COM ou STANDARD
-        is_com = 'ITX_CLOSE_EXPORT_COM' in root_tag or root.find('.//SALE_LINE_ITEMS') is not None
+        # 1. EXTRACTION DES LIGNES DE VENTE (SALE_LINES / ITEM)
+        # On cherche partout dans le document pour ne rien rater
+        for line in root.iter():
+            # Format Standard (LINE) ou Format COM (ITEM)
+            if line.tag in ['LINE', 'ITEM']:
+                parent_ticket = None
+                # Tentative de récupération des infos du ticket parent (remonte l'arbre)
+                # Note: Cette partie dépend de la structure, on prend les attributs si dispo
+                data = {
+                    'Ticket_ID': line.get('TICKETNUMBER') or line.get('TICKET_ID'),
+                    'Barcode': (line.findtext('barcode') or line.findtext('BARCODE') or line.findtext('REFERENCE')),
+                    'Description': (line.findtext('description') or line.findtext('DESCRIPTION')),
+                    'Quantite': safe_float(line.findtext('quantity') or line.findtext('QUANTITY') or line.get('quantity')),
+                    'Prix_Unitaire': safe_float(line.findtext('price') or line.findtext('PRICE') or line.get('price')),
+                    'Total_Ligne': safe_float(line.findtext('total') or 0.0),
+                    'Date': line.findtext('date') or line.findtext('DATE'),
+                    'Est_Annule': line.findtext('isVoidLine') or 'false'
+                }
+                # Calcul de vérification automatique
+                data['Verif_Calcul_Total'] = data['Quantite'] * data['Prix_Unitaire']
+                results['VENTES_DETAILS'].append(data)
+
+            # 2. EXTRACTION DES RÉCAPITULATIFS TICKETS (VALID_TICKETS)
+            elif line.tag in ['TICKET', 'VALID_TICKET']:
+                if line.findtext('totalSale') or line.findtext('TOTAL_AMOUNT'):
+                    t_data = {
+                        'Ticket_ID': line.get('TICKETNUMBER') or line.get('TICKET_ID') or line.findtext('serial'),
+                        'Date': line.findtext('date'),
+                        'Heure': line.findtext('time'),
+                        'Total_TTC': safe_float(line.findtext('totalSale') or line.findtext('TOTAL_AMOUNT')),
+                        'Total_Net': safe_float(line.findtext('totalNet')),
+                        'Vendeur': line.findtext('operatorId') or line.findtext('EMPLOYEE_ID'),
+                        'Statut_Annule': line.findtext('isVoidTicket') or 'false'
+                    }
+                    results['TICKETS_RECAP'].append(t_data)
+
+            # 3. PAIEMENTS (MEDIA_LINES)
+            elif line.tag in ['MEDIA', 'PAYMENT']:
+                p_data = {
+                    'Ticket_ID': line.get('TICKETNUMBER'),
+                    'Mode_Paiement': line.findtext('paymentMethod') or line.findtext('MEDIA_ID'),
+                    'Montant': safe_float(line.findtext('paid') or line.findtext('AMOUNT'))
+                }
+                results['PAIEMENTS'].append(p_data)
+
+        # Conversion en DataFrames
+        output_dfs = {}
+        for key, rows in results.items():
+            if rows:
+                output_dfs[key] = pd.DataFrame(rows)
         
-        if is_com:
-            # --- FORMAT ITX_COM ---
-            sections = [
-                ('VALID_TICKETS', 'TICKET'),
-                ('SALE_LINE_ITEMS', 'ITEM'),
-                ('MEDIA_LINES', 'MEDIA'),
-                ('CUSTOMER_TICKETS', 'CT_TICKET')
-            ]
-            for sec_name, elem_name in sections:
-                container = root.find(f'.//{sec_name}')
-                if container is not None:
-                    rows = []
-                    for item in container.findall(elem_name):
-                        row = {child.tag: child.text for child in item}
-                        rows.append(row)
-                    if rows:
-                        dataframes[sec_name] = pd.DataFrame(rows)
-        else:
-            # --- FORMAT STANDARD ---
-            config = [
-                ('.//SALE_LINES/LINE', 'SALE_LINES', ['STOREID', 'POSNUMBER', 'TICKETNUMBER'], 
-                 ['barcode', 'description', 'quantity', 'price', 'orgPrice', 'date', 'familyCode', 'lineType']),
-                ('.//VALID_TICKETS/TICKET', 'VALID_TICKETS', ['STOREID', 'POSNUMBER', 'TICKETNUMBER'], 
-                 ['date', 'time', 'totalSale', 'totalNet', 'operatorId', 'isVoidTicket']),
-                ('.//MEDIA_LINES/MEDIA', 'MEDIA_LINES', ['STOREID', 'TICKETNUMBER'], 
-                 ['date', 'paid', 'paymentMethod']),
-                ('.//TRANSACTIONS/TRANSACTION', 'TRANSACTIONS', None, 
-                 ['code', 'description', 'debit', 'credit', 'txType'])
-            ]
-            
-            for xpath, sheet_name, attrs, fields in config:
-                elements = root.findall(xpath)
-                rows = []
-                for elem in elements:
-                    row = {}
-                    if attrs:
-                        for a in attrs: row[a] = elem.get(a)
-                    if fields:
-                        for f in fields:
-                            target = elem.find(f)
-                            row[f] = target.text if target is not None else None
-                    rows.append(row)
-                if rows:
-                    dataframes[sheet_name] = pd.DataFrame(rows)
+        return output_dfs
 
-        # Extraction des infos Magasin (STORE_INFO)
-        store_info = root.find('.//STORE_INFO')
-        if store_info is not None:
-            dataframes['MAGASIN'] = pd.DataFrame([{c.tag: c.text for c in store_info}])
-
-        # Libération immédiate de la mémoire XML
-        del tree
-        del root
-        gc.collect()
-        
-        return dataframes
     except Exception as e:
-        st.error(f"Erreur lors de l'analyse : {e}")
+        st.error(f"Erreur technique : {e}")
         return None
 
-def create_excel(dataframes):
-    """Génère le fichier Excel avec xlsxwriter (très économe en RAM)"""
-    output = io.BytesIO()
-    try:
-        # xlsxwriter est beaucoup plus performant que openpyxl pour les gros volumes
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            for sheet_name, df in dataframes.items():
-                if not df.empty:
-                    # On nettoie le nom de la feuille (max 31 car)
-                    clean_name = sheet_name[:31].replace('[','').replace(']','')
-                    df.to_excel(writer, sheet_name=clean_name, index=False)
-        
-        output.seek(0)
-        return output
-    except Exception as e:
-        st.error(f"Erreur lors de la création Excel : {e}")
-        return None
-
-# ================= INTERFACE PRINCIPALE =================
+# ================= INTERFACE =================
 
 if not check_authentication():
     show_login_page()
 
-st.set_page_config(page_title="XML Converter PRO", page_icon="🔄", layout="wide")
+st.set_page_config(page_title="Indigo Precision Tool", layout="wide")
+st.title("📊 Extracteur XML Haute Précision")
+st.markdown("Ce mode analyse chaque balise du fichier pour garantir qu'aucun ticket n'est oublié.")
 
-# Sidebar
-with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/209/209110.png", width=100)
-    st.title("Menu")
-    if st.button("🚪 Déconnexion"):
-        st.session_state.authenticated = False
-        st.rerun()
-    st.divider()
-    st.write("**Statut :** Connecté")
-    st.write("**Mode :** Haute Performance (Large Files)")
+uploaded_files = st.file_uploader("Charger fichiers XML", type=['xml'], accept_multiple_files=True)
 
-# Page principale
-st.title("🔄 Convertisseur XML vers Excel")
-st.info("Ce mode est optimisé pour les fichiers volumineux (jusqu'à 100 Mo).")
-
-files = st.file_uploader("Glissez vos fichiers XML ici", type=['xml'], accept_multiple_files=True)
-
-if files:
-    st.write(f"📂 **{len(files)}** fichier(s) sélectionné(s)")
-    
-    if st.button("🚀 Lancer la conversion", type="primary", use_container_width=True):
-        for file in files:
-            with st.status(f"Traitement de {file.name}...", expanded=True) as status:
+if uploaded_files:
+    for file in uploaded_files:
+        with st.expander(f"📁 Analyse de {file.name}", expanded=True):
+            dfs = parse_xml_deep(file)
+            
+            if dfs and 'VENTES_DETAILS' in dfs:
+                df_ventes = dfs['VENTES_DETAILS']
                 
-                # Étape 1 : Lecture
-                start_time = time.time()
-                dfs = parse_xml_smart(file)
-                
-                if dfs:
-                    # Étape 2 : Conversion Excel
-                    excel_data = create_excel(dfs)
-                    
-                    if excel_data:
-                        elapsed = time.time() - start_time
-                        status.update(label=f"✅ {file.name} converti en {elapsed:.1f}s", state="complete")
-                        
-                        st.download_button(
-                            label=f"📥 Télécharger {file.name}.xlsx",
-                            data=excel_data,
-                            file_name=f"{file.name.replace('.xml', '')}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            key=f"dl_{file.name}"
-                        )
-                    
-                    # Nettoyage mémoire pour le fichier suivant
-                    del dfs
-                    del excel_data
-                    gc.collect()
-                else:
-                    status.update(label=f"❌ Erreur sur {file.name}", state="error")
+                # Statistiques de contrôle
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Lignes trouvées", len(df_ventes))
+                col2.metric("Total Quantités", f"{df_ventes['Quantite'].sum():.0f}")
+                col3.metric("Valeur Totale", f"{df_ventes['Verif_Calcul_Total'].sum():.2f} €")
 
-st.markdown("---")
-st.caption("Indigo Company - Optimisation Performance 2025")
+                # Bouton de téléchargement
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                    for sheet_name, df in dfs.items():
+                        df.to_excel(writer, sheet_name=sheet_name, index=False)
+                
+                st.download_button(
+                    label="📥 Télécharger l'Excel complet",
+                    data=output.getvalue(),
+                    file_name=f"PRECISION_{file.name}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+                
+                st.success(f"Analyse terminée. Vérifiez la colonne 'Verif_Calcul_Total' dans l'Excel.")
+            else:
+                st.error("Aucune donnée de vente trouvée dans ce format XML.")
